@@ -18,10 +18,10 @@ import time
 import fnmatch
 
 # set up
-code_dir = "/home/nmuncy/compute/afni_python"
-parent_dir = "/scratch/madlab/nate_vCAT"
+code_dir = "/home/nmuncy/compute/RE_gPPI"
+parent_dir = "/scratch/madlab/nate_ppi"
 sess_list = ["ses-S1"]
-phase_list = ["loc", "Study"]
+phase_list = ["Study"]
 blip_toggle = 1  # 1 = on, 0 = off
 
 
@@ -45,6 +45,7 @@ def main():
     subj_list.sort()
 
     for i in subj_list:
+        # i = "sub-1040"
         for j in sess_list:
             if not os.path.exists(
                 os.path.join(
@@ -52,7 +53,7 @@ def main():
                     "derivatives",
                     i,
                     j,
-                    f"run-1_{phase_list[1]}_scale+tlrc.HEAD",
+                    f"run-1_{phase_list[0]}_scale+tlrc.HEAD",
                 )
             ):
 
@@ -62,7 +63,7 @@ def main():
                 sbatch_job = f"""
                     sbatch \
                         -J "GP1{i.split("-")[1]}" -t 10:00:00 --mem=4000 --ntasks-per-node=1 \
-                        -p centos7_IB_44C_512G  -o {h_out} -e {h_err} \
+                        -p IB_44C_512G  -o {h_out} -e {h_err} \
                         --account iacc_madlab --qos pq_madlab \
                         --wrap="module load python-3.7.0-gcc-8.2.0-joh2xyk \n \
                         python {code_dir}/gp_step1_preproc.py {i} {j} \
