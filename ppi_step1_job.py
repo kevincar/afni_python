@@ -1,7 +1,9 @@
 """
 Notes
 
-TODO: test "easy" side
+TODO
+    1) test "easy" side
+    2) test beh bin subprocess.wait()
 """
 
 # %%
@@ -12,7 +14,6 @@ import fnmatch
 import json
 import pandas as pd
 import datetime
-import time
 from gp_step0_dcm2nii import func_sbatch
 
 
@@ -45,7 +46,7 @@ def func_decon_ppi(run_files, mot_files, tf_dict, cen_file, h_str, h_type, ppi_d
         c_beh += 1
         reg_beh += f"-stim_file {c_beh} {ppi_dict[ts]} -stim_label {c_beh} {ts} "
 
-    h_out = f"{h_str}_{h_type}_ppi"
+    h_out = f"{h_str}_decon_ppi"
 
     cmd_decon = f""" 3dDeconvolve \\
         -x1D_stop \\
@@ -286,15 +287,16 @@ def func_job(work_dir, subj, ses, phase, decon_type, seed_dict, stim_dur):
         # get upsampled behavior binary file
         if not os.path.exists(os.path.join(subj_dir, f"Beh_{h_beh}_us.1D")):
             h_cmd = f"""
+                module load afni-20.2.06
                 cd {subj_dir}
                 timing_tool.py -timing {tf_path} -tr {len_tr} \
                     -stim_dur {stim_dur} -run_len {" ".join(map(str, run_len))} \
                     -min_frac 0.3 -timing_to_1D Beh_{h_beh}_bin.1D
             """
-            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}{h_beh}", subj_dir)
-
-            # # wait for login node
-            # time.sleep(20)
+            # func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}{h_beh}", subj_dir)
+            h_sp = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+            (h_err, h_out) = h_sp.communicate()
+            h_sp.wait()
 
             if resample_decision == "easy":
                 h_cmd = f"""

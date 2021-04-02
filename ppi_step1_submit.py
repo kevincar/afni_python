@@ -18,10 +18,10 @@ import time
 
 
 # set up
-code_dir = "/home/nmuncy/compute/afni_python"
-work_dir = "/scratch/madlab/nate_vCAT"
+code_dir = "/home/nmuncy/compute/RE_gPPI"
+work_dir = "/scratch/madlab/nate_ppi"
 sess_list = ["ses-S1"]
-phase_list = ["vCAT"]
+phase_list = ["Study"]
 decon_type = "2GAM"
 seed_dict = {"LHC": "-24 -12 -22"}
 stim_dur = 2
@@ -38,18 +38,17 @@ def main():
     os.makedirs(out_dir)
 
     # submit job for each subj/sess/phase
-    subj_list = [x for x in os.listdir(
-        deriv_dir) if fnmatch.fnmatch(x, "sub-*")]
+    subj_list = [x for x in os.listdir(deriv_dir) if fnmatch.fnmatch(x, "sub-*")]
     subj_list.sort()
 
-    for i in subj_list:
-        for j in sess_list:
-            subj_dir = os.path.join(deriv_dir, i, j)
-            for k in phase_list:
+    for subj in subj_list:
+        for sess in sess_list:
+            subj_dir = os.path.join(deriv_dir, subj, sess)
+            for phase in phase_list:
                 if not os.path.exists(
                     os.path.join(
                         subj_dir,
-                        f"{k}_{decon_type}_ppi_stats_REML+tlrc.HEAD",
+                        f"{phase}_{decon_type}_ppi_stats_REML+tlrc.HEAD",
                     )
                 ):
 
@@ -58,17 +57,17 @@ def main():
                         json.dump(seed_dict, outfile)
 
                     # Set stdout/err file
-                    h_out = os.path.join(out_dir, f"out_{i}_{j}_{k}.txt")
-                    h_err = os.path.join(out_dir, f"err_{i}_{j}_{k}.txt")
+                    h_out = os.path.join(out_dir, f"out_{subj}_{sess}_{phase}.txt")
+                    h_err = os.path.join(out_dir, f"err_{subj}_{sess}_{phase}.txt")
 
                     # submit command
                     sbatch_job = f"""
                         sbatch \
-                        -J "PPI{i.split("-")[1]}" -t 15:00:00 --mem=4000 --ntasks-per-node=1 \
-                        -p centos7_IB_44C_512G  -o {h_out} -e {h_err} \
+                        -J "PPI{subj.split("-")[1]}" -t 15:00:00 --mem=4000 --ntasks-per-node=1 \
+                        -p IB_44C_512G  -o {h_out} -e {h_err} \
                         --account iacc_madlab --qos pq_madlab \
-                        --wrap="module load python-3.7.0-gcc-8.2.0-joh2xyk \n \
-                        python {code_dir}/ppi_step1_job.py {i} {j} {k} {decon_type} {deriv_dir} {stim_dur}"
+                        --wrap="/home/nmuncy/miniconda3/bin/python {code_dir}/ppi_step1_job.py \
+                            {subj} {sess} {phase} {decon_type} {deriv_dir} {stim_dur}"
                     """
 
                     sbatch_submit = subprocess.Popen(
