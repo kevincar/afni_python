@@ -1,11 +1,18 @@
 """
 Notes:
 
-1) Will organize work_dir in BIDS format.
+1) Will extract tarball from data_dir to source_dir, then make
+    NIfTI files in work_dir.
 
-2) Gets submitted from wrapper script, will generate sbatch
+2) Will organize work_dir in BIDS format.
+
+3) Gets submitted from wrapper script, will generate sbatch
     subprocesses for each dcm2nii command.
 
+Subject specific patches - sub-010
+
+TODO:
+  1) resolve the multiple T1w issue
 """
 
 # %%
@@ -43,11 +50,11 @@ def func_sbatch(command, wall_hours, mem_gig, num_proc, h_str, work_dir):
 
         if h_str not in b_decode:
             status = True
-
-        if not status:
+        else:
             while_count += 1
             print(f"Wait count for sbatch job {h_str}: ", while_count)
             time.sleep(3)
+
     print(f'Sbatch job "{h_str}" finished')
 
 
@@ -61,11 +68,10 @@ def func_dcm2nii(
         # Determine BIDS out string
         if scan_type == "func":
             h_run = tmp_scan.split("_")[-1]
-            run = 1 if "Study" in h_run else h_run  # patch
-            out_str = f"{subj}_{sess}_task-{scan_name}_run-{run}_bold"
+            out_str = f"{subj}_{sess}_task-{scan_name}_run-{h_run}_bold"
         elif scan_type == "fmap":
-            blip = tmp_scan.split("_")[2]
-            out_str = f"{subj}_{sess}_acq-func_dir-{blip}_epi"
+            h_blip = tmp_scan.split("_")[-1]
+            out_str = f"{subj}_{sess}_acq-func_dir-{h_blip}_epi"
         elif scan_type == "anat":
             out_str = f"{subj}_{sess}_T1w"
 
@@ -80,26 +86,37 @@ def func_dcm2nii(
 
 
 # %%
-def func_job(subj_str, data_dir, work_dir, scan_dict, slurm_dir):
+def func_job(dcm_tar, data_dir, work_dir, source_dir, scan_dict, slurm_dir):
 
-    # # For Testing
-    # subj_str = "McMakin_EMU-000-1040-S1"
-    # data_dir = "/home/data/madlab/McMakin_EMU/sourcedata/dicomdir/sourcedata"
-    # work_dir = "/scratch/madlab/nate_ppi/dset"
-    # scan_dict = {"func": "Study", "anat": "4-T1w", "fmap": "8-fMRI"}
+    # # for testing
+    # dcm_tar = "Mattfeld_REVL-000-vCAT-010-S1.tar.gz"
+    # data_dir = "/home/data/madlab/Mattfeld_vCAT/sourcedata"
+    # work_dir = "/scratch/madlab/nate_vCAT/dset"
+    # source_dir = "/scratch/madlab/nate_vCAT/sourcedata"
+    # scan_dict = {"func": ["vCAT", "loc"], "anat": "T1w", "fmap": "Dist"}
+    # slurm_dir = "/home/nmuncy/compute/afni_python"
 
     # get paths, make output dirs
-    sess = "ses-" + subj_str.split("-")[-1]
-    subj_num = subj_str.split("-")[2]
-    subj = f"sub-{subj_num}"
+    sess = f"ses-{dcm_tar.split('-')[4].split('.')[0]}"
+    subj = f"sub-{dcm_tar.split('-')[3]}"
 
     subj_dir = os.path.join(work_dir, subj, sess)
-    if not os.path.exists(subj_dir):
-        os.makedirs(subj_dir)
+    dcm_dir = os.path.join(source_dir, subj, sess)
+
+    for new_dir in [subj_dir, dcm_dir]:
+        if not os.path.exists(new_dir):
+            os.makedirs(new_dir)
+
+    # unzip tarball
+    tar_ball = os.path.join(data_dir, dcm_tar)
+    tar_out = dcm_tar.split(".")[0]
+    if not os.path.exists(os.path.join(dcm_dir, tar_out)):
+        h_cmd = f"tar -C {dcm_dir} -xzf {tar_ball}"
+        func_sbatch(h_cmd, 1, 1, 1, f"{subj.split('-')[1]}tar", slurm_dir)
 
     # %%
     # make scans found in scan_dict
-    scan_dir = os.path.join(data_dir, subj_str, "scans")
+    scan_dir = os.path.join(dcm_dir, tar_out, "scans")
     for scan in scan_dict:
 
         # make output dir
@@ -109,11 +126,29 @@ def func_job(subj_str, data_dir, work_dir, scan_dict, slurm_dir):
 
         # submit dcm2nii job
         if isinstance(scan_dict[scan], list):
-            for j in scan_dict[scan]:
-                h_list = [x for x in os.listdir(scan_dir) if j in x]
-                func_dcm2nii(h_list, j, scan, out_dir, scan_dir, subj, sess, slurm_dir)
+            for run in scan_dict[scan]:
+                h_list = [
+                    x
+                    for x in os.listdir(os.path.join(dcm_dir, tar_out, "scans"))
+                    if run in x
+                    and "setter" not in x
+                    and "dMRI" not in x
+                    and "32" not in x
+                ]
+
+                # patchy-patch for problem child
+                if "sub-010" in subj and "loc" in run:
+                    h_list.remove("8-fMRI_REVL_ROI_loc_1")
+
+                func_dcm2nii(
+                    h_list, run, scan, out_dir, scan_dir, subj, sess, slurm_dir
+                )
         else:
-            h_list = [x for x in os.listdir(scan_dir) if scan_dict[scan] in x]
+            h_list = [
+                x
+                for x in os.listdir(os.path.join(dcm_dir, tar_out, "scans"))
+                if scan_dict[scan] in x and "setter" not in x and "dMRI" not in x
+            ]
             func_dcm2nii(
                 h_list, scan_dict[scan], scan, out_dir, scan_dir, subj, sess, slurm_dir
             )
@@ -124,24 +159,15 @@ def func_job(subj_str, data_dir, work_dir, scan_dict, slurm_dir):
 
         # write append list
         h_append = []
-        if isinstance(scan_dict["func"], list):
-            for i in scan_dict["func"]:
-                h_run_list = [
-                    x
-                    for x in os.listdir(os.path.join(subj_dir, "func"))
-                    if fnmatch.fnmatch(x, f"{subj}_*_task-{i}_*.nii.gz")
-                ]
-        else:
-            h_str = scan_dict["func"]
-            h_run_list = [
+        for scan in scan_dict["func"]:
+            run_list = [
                 x
                 for x in os.listdir(os.path.join(subj_dir, "func"))
-                if fnmatch.fnmatch(x, f"{subj}_*_task-{h_str}_*.nii.gz")
+                if fnmatch.fnmatch(x, f"{subj}_*_task-{scan}_*.nii.gz")
             ]
-
-        h_run_list.sort()
-        for j in h_run_list:
-            h_append.append(f"{sess}/func/{j}")
+            run_list.sort()
+            for run in run_list:
+                h_append.append(f"{sess}/func/{run}")
         json_append = {"IntendedFor": h_append}
 
         # append all json files
@@ -161,17 +187,18 @@ def func_job(subj_str, data_dir, work_dir, scan_dict, slurm_dir):
 # %%
 def main():
 
-    h_subj_str = str(sys.argv[1])
+    h_dcm_tar = str(sys.argv[1])
     h_data_dir = str(sys.argv[2])
     h_par_dir = str(sys.argv[3])
     h_slurm = str(sys.argv[4])
 
     h_work_dir = os.path.join(h_par_dir, "dset")
+    h_source_dir = os.path.join(h_par_dir, "sourcedata")
 
     with open(os.path.join(h_slurm, "scan_dict.json")) as json_file:
         h_scan_dict = json.load(json_file)
 
-    func_job(h_subj_str, h_data_dir, h_work_dir, h_scan_dict, h_slurm)
+    func_job(h_dcm_tar, h_data_dir, h_work_dir, h_source_dir, h_scan_dict, h_slurm)
 
 
 if __name__ == "__main__":

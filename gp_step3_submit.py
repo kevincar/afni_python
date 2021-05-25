@@ -18,20 +18,20 @@ import json
 
 
 # set up
-code_dir = "/home/nmuncy/compute/RE_gPPI"
-work_dir = "/scratch/madlab/nate_ppi"
+code_dir = "/home/nmuncy/compute/learn_mvpa"
+work_dir = "/scratch/madlab/nate_vCAT"
 sess_list = ["ses-S1"]
-decon_type = "2GAM"
+decon_type = "TENT"
 decon_dict = {
+    "loc": [
+        "tf_loc_face.txt",
+        "tf_loc_num.txt",
+        "tf_loc_scene.txt",
+    ],
     "Study": [
-        "tf_study_SubCRNeg.txt",
-        "tf_study_SubCRNeu.txt",
-        "tf_study_SubCRPos.txt",
-        "tf_study_SubFANeg.txt",
-        "tf_study_SubFANeu.txt",
-        "tf_study_SubFAPos.txt",
-        "tf_study_SubHit.txt",
-        "tf_study_SubMiss.txt",
+        "tf_Study_fix.txt",
+        "tf_Study_con.txt",
+        "tf_Study_fbl.txt",
     ],
 }
 
@@ -50,34 +50,36 @@ def main():
     subj_list = [x for x in os.listdir(deriv_dir) if fnmatch.fnmatch(x, "sub-*")]
     subj_list.sort()
 
-    for i in subj_list:
-        # i = subj_list[4]
-        for j in sess_list:
+    for subj in subj_list:
+        # subj = subj_list[4]
+        for sess in sess_list:
 
-            h_out = os.path.join(out_dir, f"out_{i}_{j}.txt")
-            h_err = os.path.join(out_dir, f"err_{i}_{j}.txt")
+            h_out = os.path.join(out_dir, f"out_{subj}_{sess}.txt")
+            h_err = os.path.join(out_dir, f"err_{subj}_{sess}.txt")
 
             # write decon_dict to json in subj dir
-            with open(os.path.join(deriv_dir, i, j, "decon_dict.json"), "w") as outfile:
+            with open(
+                os.path.join(deriv_dir, subj, sess, "decon_dict.json"), "w"
+            ) as outfile:
                 json.dump(decon_dict, outfile)
 
             check_phase = list(decon_dict.keys())[-1]
             check_decon = list(decon_dict[list(decon_dict.keys())[-1]])[-1]
             check_file = f"{check_phase}_{check_decon}_stats_REML+tlrc.HEAD"
-            if not os.path.exists(os.path.join(deriv_dir, i, j, check_file)):
+            if not os.path.exists(os.path.join(deriv_dir, subj, sess, check_file)):
                 sbatch_job = f"""
                     sbatch \
-                    -J "GP3{i.split("-")[1]}" -t 30:00:00 --mem=4000 --ntasks-per-node=1 \
+                    -J "GP3{subj.split("-")[1]}" -t 30:00:00 --mem=4000 --ntasks-per-node=1 \
                     -p IB_44C_512G  -o {h_out} -e {h_err} \
                     --account iacc_madlab --qos pq_madlab \
                     --wrap="module load python-3.7.0-gcc-8.2.0-joh2xyk \n \
-                    python {code_dir}/gp_step3_decon.py {i} {j} {decon_type} {deriv_dir}"
+                    python {code_dir}/gp_step3_decon.py {subj} {sess} {decon_type} {deriv_dir}"
                 """
                 sbatch_submit = subprocess.Popen(
                     sbatch_job, shell=True, stdout=subprocess.PIPE
                 )
                 job_id = sbatch_submit.communicate()[0]
-                print(job_id)
+                print(job_id.decode("utf-8"))
                 time.sleep(1)
 
 
