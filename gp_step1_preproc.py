@@ -13,6 +13,7 @@ Notes
 3) Written in Python 3.8, has afni and c3d dependencies.
 """
 
+# %%
 import os
 import subprocess
 import fnmatch
@@ -21,7 +22,8 @@ from argparse import ArgumentParser
 from gp_step0_dcm2nii import func_sbatch
 
 
-# make a list of all EPI scans of phase X
+# %%
+# helper functions
 def func_epi_list(phase, h_dir):
     h_list = [
         x.split("+")[0]
@@ -44,32 +46,14 @@ def flatten_list(list_2d):
 
 
 # %%
-def func_preproc(data_dir, work_dir, subj, sess, phase_list):
+# pipeline functions
+def func_copy_data(subj, sess, work_dir, data_dir, phase_list):
 
     """
     Step 1: Copy data into work_dir
 
     1) Get func, anat, fmap data. Rename appropriately.
-
-    2) To account for different num of fmaps, will
-        produce AP, PA fmap per run.
     """
-
-    # # For testing
-    # subj = "sub-008"
-    # sess = "ses-S1"
-    # phase_list = ["loc", "Study"]
-
-    # par_dir = "/scratch/madlab/nate_vCAT"
-    # data_dir = os.path.join(par_dir, "dset", subj, sess)
-    # work_dir = os.path.join(par_dir, "derivatives", subj, sess)
-
-    # if not os.path.exists(work_dir):
-    #     os.makedirs(work_dir)
-
-    # %%
-    # Start
-    subj_num = subj.split("-")[1]
 
     # struct
     if not os.path.exists(os.path.join(work_dir, "struct+orig.HEAD")):
@@ -104,7 +88,6 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_copy.wait()
 
-    # %%
     # fmap
     fmap_list = [
         x
@@ -124,15 +107,14 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_copy.wait()
 
-    # %%
+
+def func_outliers(work_dir, phase_list, subj_num, out_thresh):
+
     """
     Step 2: Detect outliers voxels, blip correct
 
     1) Determine the proportion of voxels per volume that have outlier signal.
         Censor volumes that exceed limit.
-
-    2) Correct for signal fallout using fmap. This approach is taken from
-        afni_proc. It uses the fmap to "unwarp" the run epi.
     """
 
     for phase in phase_list:
@@ -141,13 +123,19 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             if not os.path.exists(os.path.join(work_dir, f"out.cen.{run}.1D")):
 
                 # calc tr length
-                h_cmd = f"module load afni-20.2.06 \n cd {work_dir} \n 3dinfo -tr {run}+orig"
+                h_cmd = f"""
+                    module load afni-20.2.06
+                    3dinfo -tr {work_dir}/{run}+orig
+                """
                 h_tr = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_len_tr = h_tr.communicate()[0]
                 len_tr = h_len_tr.decode("utf-8").strip()
 
                 # calc number of volumes
-                h_cmd = f"module load afni-20.2.06 \n cd {work_dir} \n 3dinfo -ntimes {run}+orig"
+                h_cmd = f"""
+                    module load afni-20.2.06
+                    3dinfo -ntimes {work_dir}/{run}+orig
+                """
                 h_nvol = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_nvol_out = h_nvol.communicate()[0]
                 num_tr = h_nvol_out.decode("utf-8").strip()
@@ -157,6 +145,7 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
 
                 # determine percentage outliers for e/volume
                 h_cmd = f"""
+                    module load afni-20.2.06
                     cd {work_dir}
 
                     3dToutcount \
@@ -167,70 +156,90 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
 
                     1deval \
                         -a outcount.{run}.1D \
-                        -expr '1-step(a-0.05)' > out.cen.{run}.1D
+                        -expr '1-step(a-{out_thresh})' > out.cen.{run}.1D
                 """
-                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}out", work_dir)
+                h_outc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                h_outc.wait()
 
-    # %%
-    # Get all epi to be corrected w/same fmap
-    epiAll_list = [
-        x.split("+")[0]
-        for x in os.listdir(os.path.join(work_dir))
-        if fnmatch.fnmatch(x, "run-*HEAD")
-    ]
 
-    # new fmap correct
-    #   -f = same direction as epi run, will
-    #       become "Forward".
-    #   Runs several 10s of minutes, crashes
-    #       when subitted through func_sbatch.
-    if not os.path.exists(os.path.join(work_dir, "blip_WARP+orig.HEAD")):
+def func_fmap_corr(work_dir, subj_num, phase_list):
+
+    """
+    Step 3: Blip correct data
+
+    1) Calculate median of AP, PA files
+    2) Compute midpoint between media files
+    3) Apply warp to de-distort (unwarp) EPI data
+
+    Note: If acq = LR, fmap = RL:
+        base = LR, source = RL
+        -pmNAMES RL LR
+        unwarp LR with LR_WARP
+    """
+
+    # create median datasets and masks
+    for h_dir in ["AP", "PA"]:
+        if not os.path.exists(
+            os.path.join(work_dir, f"tmp_med_masked_{h_dir}+orig.HEAD")
+        ):
+            h_cmd = f"""
+                cd {work_dir}
+
+                3dTstat \
+                    -median \
+                    -prefix tmp_med_{h_dir} \
+                    blip_{h_dir}+orig
+
+                3dAutomask \
+                    -apply_prefix tmp_med_masked_{h_dir} \
+                    tmp_med_{h_dir}+orig
+            """
+            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}med", work_dir)
+
+    # compute midpoint between fmaps
+    if not os.path.exists(os.path.join(work_dir, "blip_warp_For_WARP+orig.HEAD")):
         h_cmd = f"""
-            module load afni-20.2.06
             cd {work_dir}
 
-            unWarpEPI.py \
-                -f blip_PA+orig \
-                -r blip_AP+orig \
-                -d '{",".join(epiAll_list)}' \
-                -a struct+orig \
-                -s fmap
-
-            3dcopy \
-                unWarpOutput_fmap/03_fmap_MidWarped_Forward_WARP.nii.gz \
-                blip_WARP
+            3dQwarp \
+                -plusminus \
+                -pmNAMES Rev For \
+                -pblur 0.05 0.05 \
+                -blur -1 -1 \
+                -noweight \
+                -minpatch 9 \
+                -source tmp_med_masked_PA+orig \
+                -base tmp_med_masked_AP+orig \
+                -prefix blip_warp
         """
-        print(h_cmd)
-        h_fmap = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-        h_fmap.wait()
+        func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}qwa", work_dir)
 
-    # %%
-    # copy fmap corrected files to work_dir
-    #   from unWarpOutput_foo
-    # 06* is corrected file
-    fmapCorr_list = [
-        x
-        for x in os.listdir(os.path.join(work_dir, "unWarpOutput_fmap"))
-        if fnmatch.fnmatch(x, "06*.nii.gz")
-    ]
+    # unwarp run data (de-distort), apply header
+    for phase in phase_list:
+        epi_list = func_epi_list(phase, work_dir)
+        for run in epi_list:
+            if not os.path.exists(os.path.join(work_dir, f"{run}_blip+orig.HEAD")):
+                h_cmd = f"""
+                    cd {work_dir}
 
-    for fmap_file in fmapCorr_list:
-        h_run = fmap_file.split("_")[2]
-        h_phase = fmap_file.split("_")[3]
-        out_file = os.path.join(work_dir, f"{h_run}_{h_phase}_blip")
-        if not os.path.exists(f"{out_file}+orig.HEAD"):
-            h_cmd = f"""
-                module load afni-20.2.06
-                3dcopy \
-                    {work_dir}/unWarpOutput_fmap/{fmap_file} \
-                    {out_file}
-            """
-            h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-            h_copy.wait()
+                    3dNwarpApply \
+                        -quintic \
+                        -nwarp blip_warp_For_WARP+orig \
+                        -source {run}+orig \
+                        -prefix {run}_blip
 
-    # %%
+                    3drefit \
+                        -atrcopy blip_AP+orig \
+                        IJK_TO_DICOM_REAL \
+                        {run}_blip+orig
+                """
+                func_sbatch(h_cmd, 1, 2, 4, f"{subj_num}nwar", work_dir)
+
+
+def func_vrbase(work_dir, phase_list, blip_tog):
+
     """
-    Step 3: Make volreg base
+    Step 4: Make volreg base
 
     1) The volreg base (epi_vrBase) is the single volume in entire experiment
         with the smallest number of outlier volumes.
@@ -262,11 +271,13 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
 
     # all epi runs in experiment, same order as out_list!
     scan_dict = {}
+    h_str = "_blip+orig" if blip_tog == 1 else "+orig"
+
     for phase in phase_list:
         h_list = [
             x.split(".")[0]
             for x in os.listdir(work_dir)
-            if fnmatch.fnmatch(x, f"run-*{phase}_blip+orig.HEAD")
+            if fnmatch.fnmatch(x, f"run-*{phase}{h_str}.HEAD")
         ]
         h_list.sort()
         scan_dict[phase] = h_list
@@ -278,9 +289,10 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         # list of volume nums
         num_vols = []
         for scan in scan_list:
-            h_cmd = (
-                f"module load afni-20.2.06 \n cd {work_dir} \n 3dinfo -ntimes {scan}"
-            )
+            h_cmd = f"""
+                module load afni-20.2.06
+                3dinfo -ntimes {work_dir}/{scan}
+            """
             h_nvol = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_nvol.wait()
             h_nvol_out = h_nvol.communicate()[0]
@@ -290,7 +302,10 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         # determine index of min
         h_cmd = f"""
             module load afni-20.2.06
-            3dTstat -argmin -prefix - {work_dir}/outcount_all.1D\\'
+            3dTstat \
+                -argmin \
+                -prefix - \
+                {work_dir}/outcount_all.1D\\'
         """
         h_mind = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_mind.wait()
@@ -318,28 +333,22 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         h_cmd = f"""
             module load afni-20.2.06
             cd {work_dir}
-            3dbucket -prefix epi_vrBase {min_run}"[{min_vol}]"
+            3dbucket \
+                -prefix epi_vrBase \
+                {min_run}"[{min_vol}]"
         """
         h_vrb = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_vrb.wait()
 
-    # %%
+
+def func_register(atlas, work_dir, subj_num):
+
     """
-    Step 4: Calc, Perfrom normalization
+    Step 5: Calculate normalization
 
-    1) This step will perform the rigid alignments of T1-EPI (A)
-        EPI-EPI base volume (B), and non-linear diffeomorphic of
-        T1-Template (C). Note blip distortion map (D).
-
-    2) It will then concatenate these warp matrices, and warp EPI data from
-        raw/native space to template space via W=A'+B+C+D. Thus, only one
-        interpolation of the epi data occurs.
-
-    3) Will also censor volumes that have outlier, to not bias scaling
+    1) This step will perform the rigid alignments of T1->EPI
+        and non-linear diffeomorphic of T1->Template.
     """
-
-    # Calculate T1-EPI rigid, T1-Template diffeo
-    atlas_dir = "/home/data/madlab/atlases/vold2_mni"
 
     if not os.path.exists(os.path.join(work_dir, "struct_ns+tlrc.HEAD")):
         h_cmd = f"""
@@ -360,7 +369,7 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 -tshift off
 
             auto_warp.py \
-                -base {os.path.join(atlas_dir, "vold2_mni_brain+tlrc")} \
+                -base {atlas} \
                 -input struct_ns+orig \
                 -skull_strip_input no
 
@@ -374,17 +383,50 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         """
         func_sbatch(h_cmd, 1, 4, 4, f"{subj_num}dif", work_dir)
 
-    # %%
+
+def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
+
+    """
+    Step 6: Warp EPI data to template space
+
+    1) This step will perform the rigid alignments of T1-EPI (A)
+        EPI-EPI base volume (B), and non-linear diffeomorphic of
+        T1-Template (C). Note blip distortion map (D).
+
+    2) Together, then, we will have T1-EPI (A), EPI-EPI base volume (B),
+        and non-linear diffeomorphic of T1-Template (C) and possibly
+        blip distortion map (D) matrices.
+
+    3) It will then concatenate these warp matrices, and warp EPI data from
+        raw/native space to template space via W=A'+B+C+D. Thus, only one
+        interpolation of the epi data occurs.
+    """
+
+    scan_dict = {}
+    h_str = "_blip+orig" if blip_tog == 1 else "+orig"
+
+    for phase in phase_list:
+        h_list = [
+            x.split(".")[0]
+            for x in os.listdir(work_dir)
+            if fnmatch.fnmatch(x, f"run-*{phase}{h_str}.HEAD")
+        ]
+        h_list.sort()
+        scan_dict[phase] = h_list
+    scan_list = flatten_list(list(scan_dict.values()))
+
     for h_run in scan_list:
 
-        run = h_run.split("_blip")[0]
+        # get run str
+        run = h_run.split("_blip")[0] if blip_tog == 1 else h_run.split("+")[0]
 
         # Calculate volreg for e/run
         if not os.path.exists(os.path.join(work_dir, f"mat.{run}.vr.aff12.1D")):
             h_cmd = f"""
                 cd {work_dir}
 
-                3dvolreg -verbose \
+                3dvolreg \
+                    -verbose \
                     -zpad 1 \
                     -base epi_vrBase+orig \
                     -1Dfile dfile.{run}.1D \
@@ -395,12 +437,14 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             """
             func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}vre", work_dir)
 
+        # set up, warp EPI to template
         if not os.path.exists(os.path.join(work_dir, f"{run}_warp+tlrc.HEAD")):
 
             # get grid size
-            h_cmd = (
-                f"module load afni-20.2.06 \n cd {work_dir} \n 3dinfo -di {run}+orig"
-            )
+            h_cmd = f"""
+                module load afni-20.2.06
+                3dinfo -di {work_dir}/{run}+orig
+            """
             h_gs = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_gs_out = h_gs.communicate()[0]
             grid_size = h_gs_out.decode("utf-8").strip()
@@ -410,7 +454,8 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 module load afni-20.2.06
                 cd {work_dir}
 
-                cat_matvec -ONELINE \
+                cat_matvec \
+                    -ONELINE \
                     anat.un.aff.Xat.1D \
                     struct_al_junk_mat.aff12.1D -I \
                     mat.{run}.vr.aff12.1D > mat.{run}.warp.aff12.1D
@@ -418,8 +463,11 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             h_cat = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_cat.wait()
 
-            # warp native epi, mask
-            h_nwarp = f"anat.un.aff.qw_WARP.nii mat.{run}.warp.aff12.1D blip_WARP+orig"
+            # warp epi, mask into template space
+            nwarp_list = ["anat.un.aff.qw_WARP.nii", f"mat.{run}.warp.aff12.1D"]
+            if blip_tog == 1:
+                nwarp_list.append("blip_warp_For_WARP+orig")
+
             h_cmd = f"""
                 cd {work_dir}
 
@@ -427,32 +475,62 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                     -master struct_ns+tlrc \
                     -dxyz {grid_size} \
                     -source {run}+orig \
-                    -nwarp '{h_nwarp}' \
+                    -nwarp '{" ".join(nwarp_list)}' \
                     -prefix {run}_warp
+            """
+            func_sbatch(h_cmd, 2, 4, 4, f"{subj_num}war", work_dir)
+
+        # Update - don't waste computation time warping
+        #   simple mask into template space. Just make
+        #   mask from warped EPI data
+        if not os.path.exists(os.path.join(work_dir, f"tmp_{run}_min")):
+
+            run_str = f"{run}_blip+orig" if blip_tog == 1 else f"{run}+orig"
+
+            h_cmd = f"""
+                cd {work_dir}
+
+                # 3dcalc \
+                #     -overwrite \
+                #     -a {run_str} \
+                #     -expr 1 \
+                #     -prefix tmp_{run}_mask
+
+                # 3dNwarpApply \
+                #     -master struct_ns+tlrc \
+                #     -dxyz {grid_size} \
+                #     -source tmp_{run}_mask+orig \
+                #     -nwarp 'anat.un.aff.qw_WARP.nii mat.{run}.warp.aff12.1D' \
+                #     -interp cubic \
+                #     -ainterp NN -quiet \
+                #     -prefix {run}_mask_warped
 
                 3dcalc \
                     -overwrite \
-                    -a {run}_blip+orig \
+                    -a {run}_warp+tlrc \
                     -expr 1 \
                     -prefix tmp_{run}_mask
-
-                3dNwarpApply \
-                    -master struct_ns+tlrc \
-                    -dxyz {grid_size} \
-                    -source tmp_{run}_mask+orig \
-                    -nwarp 'anat.un.aff.qw_WARP.nii mat.{run}.warp.aff12.1D' \
-                    -interp cubic \
-                    -ainterp NN -quiet \
-                    -prefix {run}_mask_warped
 
                 3dTstat \
                     -min \
                     -prefix tmp_{run}_min \
-                    {run}_mask_warped+tlrc
+                    tmp_{run}_mask+tlrc
             """
-            func_sbatch(h_cmd, 2, 4, 4, f"{subj_num}war", work_dir)
+            # func_sbatch(h_cmd, 2, 4, 4, f"{subj_num}warm", work_dir)
+            h_mask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+            h_mask.wait()
 
-    # %%
+
+def func_clean_volreg(work_dir, phase_list, subj_num):
+
+    """
+    Step 7: Clean volreg data
+
+    1) Censor potentially bad volumes to avoid biasing scale step.
+
+    Note: This rarely has an effect.
+    """
+
     # Determine minimum value, make mask
     #   beware the jabberwocky i.e. expanding braces in 3dMean
     for phase in phase_list:
@@ -488,20 +566,14 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 """
                 func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}cle", work_dir)
 
-    # %%
+
+def func_blur(work_dir, subj_num, blur_mult):
+
     """
-    Step 5: Blur, Make masks
+    Step 8: Blur EPI data
 
-    1) Blur epi data - 1.5 * voxel dim, rounded up to nearest int. FWHM.
-
-    2) Make a union mask, where sufficient signal exists for both T1w
-        and T2*w at each voxel for analyses. Incorporated at the
-        group-level analysis.
-
-    3) Make tissue masks. The WM mask will be used later to derive
-        nuissance regressors for the REML.
-        Note: this references some custom masks, and is based in
-            atropos rather than in AFNIs tiss seg protocol.
+    1) Blur kernel is size = blur_multiplier * voxel dim,
+        rounded up to nearest int. FWHM.
     """
 
     # Blur
@@ -515,13 +587,14 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         if not os.path.exists(os.path.join(work_dir, f"{run}_blur+tlrc.HEAD")):
 
             # calc voxel dim i
-            h_cmd = (
-                f"module load afni-20.2.06 \n cd {work_dir} \n 3dinfo -di {run}+orig"
-            )
+            h_cmd = f"""
+                module load afni-20.2.06
+                3dinfo -di {work_dir}/{run}+orig
+            """
             h_gs = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_gs_out = h_gs.communicate()[0]
             grid_size = h_gs_out.decode("utf-8").strip()
-            blur_size = math.ceil(1.5 * float(grid_size))
+            blur_size = math.ceil(blur_mult * float(grid_size))
 
             # do blur
             h_cmd = f"""
@@ -534,7 +607,28 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             """
             func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}blur", work_dir)
 
-    # %%
+
+def func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir):
+
+    """
+    Step 9:  Make union and tissue masks
+
+    1) Make a union mask, where sufficient signal exists for both T1w
+        and T2*w at each voxel for analyses. Incorporated at the
+        group-level analysis.
+
+    2) Make tissue masks. The WM mask will be used later to derive
+        nuissance regressors for the REML.
+        Note: this references some custom masks, and is based in
+            atropos rather than in AFNIs tiss seg protocol.
+    """
+
+    epi_list = [
+        x.split("_vol")[0]
+        for x in os.listdir(work_dir)
+        if fnmatch.fnmatch(x, "*volreg_clean+tlrc.HEAD")
+    ]
+
     # Make EPI-T1 union mask (mask_epi_anat)
     if not os.path.exists(os.path.join(work_dir, "mask_epi_anat+tlrc.HEAD")):
 
@@ -543,10 +637,13 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 os.path.join(work_dir, f"tmp_mask.{run}_blur+tlrc.HEAD")
             ):
                 h_cmd = f"""
+                    module load afni-20.2.06
                     cd {work_dir}
                     3dAutomask -prefix tmp_mask.{run} {run}_blur+tlrc
                 """
-                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}mau", work_dir)
+                # func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}mau", work_dir)
+                h_mask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                h_mask.wait()
 
         h_cmd = f"""
             cd {work_dir}
@@ -578,11 +675,8 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
         """
         func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}uni", work_dir)
 
-    # %%
     # Make tissue-class masks
     #   I like Atropos better than AFNI's way, so use those priors
-    atropos_dict = {1: "CSF", 2: "GMc", 3: "WM", 4: "GMs"}
-    atropos_dir = os.path.join(atlas_dir, "priors_ACT")
     h_ref = f"{epi_list[0]}_blur+tlrc"
 
     for key in atropos_dict:
@@ -618,9 +712,11 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
             """
             func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}atr", work_dir)
 
-    # %%
+
+def func_scale(work_dir, phase_list, subj_num):
+
     """
-    Step 6: Scale data
+    Step 10: Scale data
 
     1) Data is scaled by mean signal
     """
@@ -643,27 +739,102 @@ def func_preproc(data_dir, work_dir, subj, sess, phase_list):
                 func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}scale", work_dir)
 
 
-# %%
-# receive arguments
 def func_argparser():
     parser = ArgumentParser("Receive Bash args from wrapper")
     parser.add_argument("h_sub", help="Subject ID")
     parser.add_argument("h_ses", help="Session")
     parser.add_argument("h_par", help="Parent Directory")
+    parser.add_argument("h_bt", help="Blip Toggle")
     parser.add_argument("h_phl", nargs="+", help="Phase List")
     return parser
 
 
+# %%
 def main():
 
+    # """ For testing """
+    # subj = "sub-005"
+    # sess = "ses-S1"
+    # phase_list = ["loc", "Study"]
+    # blip_tog = 1
+
+    # par_dir = "/scratch/madlab/nate_vCAT"
+    # data_dir = os.path.join(par_dir, "dset", subj, sess)
+    # work_dir = os.path.join(par_dir, "derivatives", subj, sess)
+
+    """ Get passed arguments """
     args = func_argparser().parse_args()
-    h_data_dir = os.path.join(args.h_par, "dset", args.h_sub, args.h_ses)
-    h_work_dir = os.path.join(args.h_par, "derivatives", args.h_sub, args.h_ses)
+    subj = args.h_sub
+    sess = args.h_ses
+    par_dir = args.h_par
+    phase_list = args.h_phl
+    blip_tog = args.h_bt
 
-    if not os.path.exists(h_work_dir):
-        os.makedirs(h_work_dir)
+    """ Make some vars """
+    data_dir = os.path.join(par_dir, "dset", subj, sess)
+    work_dir = os.path.join(par_dir, "derivatives", subj, sess)
+    subj_num = subj.split("-")[1]
 
-    func_preproc(h_data_dir, h_work_dir, args.h_sub, args.h_ses, args.h_phl)
+    """ Set up deriv """
+    if not os.path.exists(work_dir):
+        os.makedirs(work_dir)
+
+    """ Copy dset niftis to derivatives """
+    check_func = os.path.join(work_dir, f"run-1_{phase_list[0]}+orig.HEAD")
+    if not os.path.exists(check_func):
+        func_copy_data(subj, sess, work_dir, data_dir, phase_list)
+
+    """ Determine outlier voxels per volume """
+    out_thresh = 0.1
+    if not os.path.exists(os.path.join(work_dir, f"out.cen.run-1_{phase_list[0]}.1D")):
+        func_outliers(work_dir, phase_list, subj_num, out_thresh)
+
+    """ fmap correct data """
+    if blip_tog == 1:
+        check_blip = os.path.join(work_dir, f"run-1_{phase_list[0]}_blip+orig.HEAD")
+        if not os.path.exists(check_blip):
+            func_fmap_corr(work_dir, subj_num, phase_list)
+
+    """ Make volume registration base """
+    if not os.path.exists(os.path.join(work_dir, "epi_vrBase+orig.HEAD")):
+        func_vrbase(work_dir, phase_list, blip_tog)
+
+    """ Calculate normalization vectors """
+    atlas_dir = "/home/data/madlab/atlases/vold2_mni"
+    atlas = os.path.join(atlas_dir, "vold2_mni_brain+tlrc")
+    check_diffeo = os.path.join(work_dir, "anat.un.aff.qw_WARP.nii")
+    if not os.path.exists(check_diffeo):
+        func_register(atlas, work_dir, subj_num)
+
+    """ Volreg, warp epi to template space """
+    check_warp = os.path.join(work_dir, f"run-1_{phase_list[0]}_warp+tlrc.HEAD")
+    if not os.path.exists(check_warp):
+        func_volreg_warp(work_dir, phase_list, subj_num, blip_tog)
+
+    """ Clean warped data """
+    check_clean = os.path.join(
+        work_dir, f"run-1_{phase_list[0]}_volreg_clean+tlrc.HEAD"
+    )
+    if not os.path.exists(check_clean):
+        func_clean_volreg(work_dir, phase_list, subj_num)
+
+    """ Blur data """
+    blur_mult = 1.5
+    check_blur = os.path.join(work_dir, f"run-1_{phase_list[0]}_blur+tlrc.HEAD")
+    if not os.path.exists(check_blur):
+        func_blur(work_dir, subj_num, blur_mult)
+
+    """ Make tissue masks """
+    atropos_dict = {1: "CSF", 2: "GMc", 3: "WM", 4: "GMs"}
+    atropos_dir = os.path.join(atlas_dir, "priors_ACT")
+    check_tiss = os.path.join(work_dir, "final_mask_CSF_eroded+tlrc.HEAD")
+    if not os.path.exists(check_tiss):
+        func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir)
+
+    """ Scale data """
+    check_scale = os.path.join(work_dir, f"run-1_{phase_list[0]}_scale+tlrc.HEAD")
+    if not os.path.exists(check_scale):
+        func_scale(work_dir, phase_list, subj_num)
 
 
 if __name__ == "__main__":
