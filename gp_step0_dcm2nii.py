@@ -79,7 +79,14 @@ def func_dcm2nii(
         if not os.path.exists(os.path.join(out_dir, f"{out_str}.nii.gz")):
             h_cmd = f"""
                 module load dcm2niix-1.0.20190902
-                dcm2niix -b y -ba y -z y -o {out_dir} -f {out_str} {os.path.join(scan_dir, tmp_scan, "resources/DICOM/files")}
+
+                dcm2niix \
+                    -b y \
+                    -ba y \
+                    -z y \
+                    -o {out_dir} \
+                    -f {out_str} \
+                    {os.path.join(scan_dir, tmp_scan, "resources/DICOM/files")}
             """
             subj_num = subj.split("-")[1]
             func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}{scan_type}", slurm_dir)

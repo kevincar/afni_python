@@ -7,6 +7,9 @@
 #
 # New study timing files only models conditional,
 #   fixed, and fixed-BL trials
+#
+# Update - added fixed-BL trials preceding face
+#   and scene for SVM categories
 
 
 func_locTime <- function(numRuns, phase, subjStr, dataDir, outDir){
@@ -429,13 +432,29 @@ func_studyTime <- function(numRuns, phase, subjStr, dataDir, outDir){
     h_fix_nbl <- which(data_raw[ind_fix + 1,]$trialtype != "BL")
     ind_fix_nbl <- ind_fix[h_fix_nbl]
     
+    # determine fbl scene vs face
+    h_fix_bl_face <- which(
+      data_raw[ind_fix_bl + 2,]$stim == "face1" |
+      data_raw[ind_fix_bl + 2,]$stim == "face2"
+    )
+    ind_fix_bl_face <- ind_fix_bl[h_fix_bl_face]
+    
+    h_fix_bl_scene <- which(
+      data_raw[ind_fix_bl + 2,]$stim == "scene1" |
+      data_raw[ind_fix_bl + 2,]$stim == "scene2"
+    )
+    ind_fix_bl_scene <- ind_fix_bl[h_fix_bl_scene]
+    
     # grab onset, calc duration, don't include ISI
     #   Note - fix_bl increases index by 2
     #   Also, most common duration is captured
+    
+    # con
     ons_con <- data_raw[ind_con,]$onset
     h_dur_con <- round(data_raw[ind_con + 1,]$onset - ons_con - isi_dur, 1)
     dur_con <- as.numeric(names(table(h_dur_con)[1]))
     
+    # fbl
     ons_fix_bl <- data_raw[ind_fix_bl,]$onset
     h_dur_fix_bl <- round(
       data_raw[ind_fix_bl + 2,]$onset - ons_fix_bl - isi_dur, 
@@ -443,6 +462,15 @@ func_studyTime <- function(numRuns, phase, subjStr, dataDir, outDir){
     )
     dur_fix_bl <- as.numeric(names(table(h_dur_fix_bl)[1]))
     
+    # fbl-face
+    ons_fix_bl_face <- data_raw[ind_fix_bl_face,]$onset
+    dur_fix_bl_face <- dur_fix_bl
+    
+    # fbl-scene
+    ons_fix_bl_scene <- data_raw[ind_fix_bl_scene,]$onset
+    dur_fix_bl_scene <- dur_fix_bl
+    
+    # fix (no bl)
     ons_fix_nbl <- data_raw[ind_fix_nbl,]$onset
     h_dur_fix_nbl <- round(
       data_raw[ind_fix_nbl + 1,]$onset - ons_fix_nbl - isi_dur, 
@@ -450,10 +478,13 @@ func_studyTime <- function(numRuns, phase, subjStr, dataDir, outDir){
     )
     dur_fix_nbl <- as.numeric(names(table(h_dur_fix_nbl)[1]))
     
-    # write out
+    # write out timing files
     out_tf_con <- paste0(outDir, "/tf_Study_con.txt")
     out_tf_fix <- paste0(outDir, "/tf_Study_fix.txt")
     out_tf_fbl <- paste0(outDir, "/tf_Study_fbl.txt")
+    out_tf_fblf <- paste0(outDir, "/tf_Study_fblf.txt")
+    out_tf_fbls <- paste0(outDir, "/tf_Study_fbls.txt")
+    
     cat(
       round(ons_con, 1), 
       "\n", 
@@ -475,13 +506,33 @@ func_studyTime <- function(numRuns, phase, subjStr, dataDir, outDir){
       append = h_ap, 
       sep = "\t"
     )
+    cat(
+      round(ons_fix_bl_face, 1), 
+      "\n", 
+      file = out_tf_fblf, 
+      append = h_ap, 
+      sep = "\t"
+    )
+    cat(
+      round(ons_fix_bl_scene, 1), 
+      "\n", 
+      file = out_tf_fbls, 
+      append = h_ap, 
+      sep = "\t"
+    )
     
+    # write out duration files
     out_dur_con <- paste0(outDir, "/dur_Study_con.txt")
     out_dur_fix <- paste0(outDir, "/dur_Study_fix.txt")
     out_dur_fbl <- paste0(outDir, "/dur_Study_fbl.txt")
+    out_dur_fblf <- paste0(outDir, "/dur_Study_fblf.txt")
+    out_dur_fbls <- paste0(outDir, "/dur_Study_fbls.txt")
+    
     cat(dur_con, "\n", file = out_dur_con, append = h_ap, sep = "\t")
     cat(dur_fix_nbl, "\n", file = out_dur_fix, append = h_ap, sep = "\t")
     cat(dur_fix_bl, "\n", file = out_dur_fbl, append = h_ap, sep = "\t")
+    cat(dur_fix_bl_face, "\n", file = out_dur_fblf, append = h_ap, sep = "\t")
+    cat(dur_fix_bl_scene, "\n", file = out_dur_fbls, append = h_ap, sep = "\t")
   }
 }
 
@@ -499,10 +550,9 @@ phase <- args[10]
 # dataDir <- paste0("/Users/nmuncy/Projects/learn_mvpa/vCAT_data/", subjStr)
 # outDir <- "~/Desktop/vCAT_time"
 # numRuns <- 2
-# phase <- "loc"
+# phase <- "task"
 # run <- 1
-# type <- "cond"
-# ind <- 4
+
 
 # work
 if(phase == "loc"){
