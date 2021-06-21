@@ -58,9 +58,9 @@ def func_write_decon(
 
     # determine, build behavior regressors
     switch_dict = {
-        "dmBLOCK": "'dmBLOCK(1)'",
-        "GAM": "'GAM'",
-        "2GAM": "'TWOGAMpw(4,5,0.2,12,7)'",
+        "dmBLOCK": ["'dmBLOCK(1)'", "-stim_times_AM1"],
+        "GAM": ["'GAM'", "-stim_times"],
+        "2GAM": ["'TWOGAMpw(4,5,0.2,12,7)'", "-stim_times"],
     }
 
     reg_beh = []
@@ -69,10 +69,10 @@ def func_write_decon(
 
             # add stim_time info, order is
             #   -stim_times 1 tf_beh.txt basisFunction
-            reg_beh.append("-stim_times_AM1")
+            reg_beh.append(switch_dict[decon_type][1])
             reg_beh.append(f"{c_beh + 1}")
             reg_beh.append(f"timing_files/{tf_dict[beh]}")
-            reg_beh.append(switch_dict[decon_type])
+            reg_beh.append(switch_dict[decon_type][0])
 
             # add stim_label info, order is
             #   -stim_label 1 beh
@@ -408,7 +408,7 @@ def main():
     """ Submit job for each phase """
     for phase in decon_dict:
 
-        """ Make motion files """
+        """Make motion files"""
         if not os.path.exists(os.path.join(work_dir, f"censor_{phase}_combined.1D")):
             func_motion(work_dir, phase, sub_num)
 
