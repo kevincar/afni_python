@@ -15,9 +15,12 @@ Notes
 
 # %%
 import os
-import subprocess
 import fnmatch
 import math
+import subprocess
+
+import numpy as np
+
 from argparse import ArgumentParser
 from gp_step0_dcm2nii import func_sbatch
 
@@ -34,20 +37,22 @@ def func_epi_list(phase, h_dir):
     return h_list
 
 
-def flatten_list(list_2d):
-    flat_list = []
-    for element in list_2d:
-        if type(element) is list:
-            for item in element:
-                flat_list.append(item)
-        else:
-            flat_list.append(element)
-    return flat_list
+def print_process_output(process):
+    rc = None
+    while True:
+        output = process.stdout.readline()
+        if process.poll() is not None:
+            print(output.strip().decode())
+            break
+        if output:
+            print(output.strip().decode())
+        rc = process.poll()
+    return rc
 
 
 # %%
 # pipeline functions
-def func_copy_data(subj, sess, work_dir, data_dir, phase_list):
+def func_copy_data(subj, sess, work_dir, data_dir, phase_list, blip_tog):
 
     """
     Step 1: Copy data into work_dir
@@ -57,18 +62,23 @@ def func_copy_data(subj, sess, work_dir, data_dir, phase_list):
 
     # struct
     if not os.path.exists(os.path.join(work_dir, "struct+orig.HEAD")):
+        src_file_name = f"{subj}_{sess}_T1w.nii.gz" if len(sess) > 0 else f"{subj}_T1w.nii.gz"
+        src_file_path = os.path.join(data_dir, "anat", src_file_name)
+        dst_file_name = "struct+orig"
+        dst_file_path = os.path.join(work_dir, dst_file_name)
         h_cmd = f"""
             module load afni-20.2.06
             3dcopy \
-                {data_dir}/anat/{subj}_{sess}_T1w.nii.gz \
-                {work_dir}/struct+orig
+                {src_file_path} \
+                {dst_file_path}
         """
         h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_copy.wait()
+        if h_copy.returncode != 0:
+            raise Exception(f"Command: {h_cmd} exited with an exit code of {h_copy.returncode}")
 
     # epi - keep runs sorted by phase
     for phase in phase_list:
-
         epiNii_list = [
             epi
             for epi in os.listdir(os.path.join(data_dir, "func"))
@@ -79,6 +89,10 @@ def func_copy_data(subj, sess, work_dir, data_dir, phase_list):
         for h_count, h_file in enumerate(epiNii_list):
             run_count = 1 + h_count
             if not os.path.exists(f"{work_dir}/run-{run_count}_{phase}+orig.HEAD"):
+                src_file_name = h_file
+                src_file_path = os.path.join(data_dir, "func", src_file_name)
+                dst_file_name = f"run-{run_count}_{phase}+orig"
+                dst_file_path = os.path.join(work_dir, dst_file_name)
                 h_cmd = f"""
                     module load afni-20.2.06
                     3dcopy \
@@ -87,29 +101,31 @@ def func_copy_data(subj, sess, work_dir, data_dir, phase_list):
                 """
                 h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_copy.wait()
+                if h_copy.returncode != 0:
+                    raise Exception(f"Command: {h_cmd} exited with an exit code of {h_copy.returncode}")
 
     # fmap
-    fmap_list = [
-        x
-        for x in os.listdir(os.path.join(data_dir, "fmap"))
-        if fnmatch.fnmatch(x, "*.nii.gz")
-    ]
+    if blip_tog == 1:
+        fmap_list = [
+            x
+            for x in os.listdir(os.path.join(data_dir, "fmap"))
+            if fnmatch.fnmatch(x, "*.nii.gz")
+        ]
 
-    for fmap in fmap_list:
-        h_dir = fmap.split("-")[-1].split("_")[0]
-        if not os.path.exists(f"{work_dir}/blip_{h_dir}+orig.HEAD"):
-            h_cmd = f"""
-                module load afni-20.2.06
-                3dcopy \
-                    {data_dir}/fmap/{fmap} \
-                    {work_dir}/blip_{h_dir}
-            """
-            h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-            h_copy.wait()
+        for fmap in fmap_list:
+            h_dir = fmap.split("-")[-1].split("_")[0]
+            if not os.path.exists(f"{work_dir}/blip_{h_dir}+orig.HEAD"):
+                h_cmd = f"""
+                    module load afni-20.2.06
+                    3dcopy \
+                        {data_dir}/fmap/{fmap} \
+                        {work_dir}/blip_{h_dir}
+                """
+                h_copy = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                h_copy.wait()
 
 
 def func_outliers(work_dir, phase_list, subj_num, out_thresh):
-
     """
     Step 2: Detect outliers voxels, blip correct
 
@@ -160,6 +176,12 @@ def func_outliers(work_dir, phase_list, subj_num, out_thresh):
                 """
                 h_outc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_outc.wait()
+                if h_tr.returncode != 0:
+                    raise Exception("TR failed")
+                if h_nvol.returncode != 0:
+                    raise Exception("nvol failed")
+                if h_outc.returncode != 0:
+                    raise Exception("out count failed")
 
 
 def func_fmap_corr(work_dir, subj_num, phase_list):
@@ -261,7 +283,7 @@ def func_vrbase(work_dir, phase_list, blip_tog):
         ]
         h_list.sort()
         out_dict[phase] = h_list
-    out_list = flatten_list(list(out_dict.values()))
+    out_list = list(np.hstack(list(out_dict.values())))
 
     out_all = os.path.join(work_dir, "outcount_all.1D")
     with open(out_all, "w") as outfile:
@@ -281,7 +303,7 @@ def func_vrbase(work_dir, phase_list, blip_tog):
         ]
         h_list.sort()
         scan_dict[phase] = h_list
-    scan_list = flatten_list(list(scan_dict.values()))
+    scan_list = list(np.hstack(list(scan_dict.values())))
 
     # make volume registration base
     if not os.path.exists(os.path.join(work_dir, "epi_vrBase+orig.HEAD")):
@@ -295,6 +317,8 @@ def func_vrbase(work_dir, phase_list, blip_tog):
             """
             h_nvol = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_nvol.wait()
+            if h_nvol.returncode != 0:
+                raise Exception("h_nvol failed")
             h_nvol_out = h_nvol.communicate()[0]
             num_tr = h_nvol_out.decode("utf-8").strip()
             num_vols.append(num_tr)
@@ -309,6 +333,8 @@ def func_vrbase(work_dir, phase_list, blip_tog):
         """
         h_mind = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_mind.wait()
+        if h_mind.returncode != 0:
+            raise Exception("h_mind failed")
         h_ind = h_mind.communicate()[0]
         ind_min = h_ind.decode("utf-8").strip()
 
@@ -321,6 +347,8 @@ def func_vrbase(work_dir, phase_list, blip_tog):
         """
         h_minV = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_minV.wait()
+        if h_minV.returncode != 0:
+            raise Exception("h_minV failed")
         h_min = h_minV.communicate()[0]
         min_runVol = h_min.decode("utf-8").strip().split()
 
@@ -339,6 +367,8 @@ def func_vrbase(work_dir, phase_list, blip_tog):
         """
         h_vrb = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
         h_vrb.wait()
+        if h_vrb.returncode != 0:
+            raise Exception("h_vrb failed")
 
 
 def func_register(atlas, work_dir, subj_num):
@@ -351,10 +381,8 @@ def func_register(atlas, work_dir, subj_num):
     """
 
     if not os.path.exists(os.path.join(work_dir, "struct_ns+tlrc.HEAD")):
-        h_cmd = f"""
-            cd {work_dir}
-
-            align_epi_anat.py \
+        h_aeapy = f"""
+            cd {work_dir} && align_epi_anat.py \
                 -anat2epi \
                 -anat struct+orig \
                 -save_skullstrip \
@@ -367,21 +395,46 @@ def func_register(atlas, work_dir, subj_num):
                 -check_flip \
                 -volreg off \
                 -tshift off
+            """
+        align_process = subprocess.Popen(h_aeapy, shell=True, stdout=subprocess.PIPE)
+        print_process_output(align_process)
+        align_process.wait()
+        if align_process.returncode != 0:
+            raise Exception("Align Failed")
 
-            auto_warp.py \
+        h_warp = f"""
+            cd {work_dir} && auto_warp.py \
                 -base {atlas} \
                 -input struct_ns+orig \
                 -skull_strip_input no
+            """
+        warp_process = subprocess.Popen(h_warp, shell=True, stdout=subprocess.PIPE)
+        print_process_output(warp_process)
+        warp_process.wait()
+        if warp_process.returncode != 0:
+            raise Exception("Warp Failed")
 
-            3dbucket \
+        h_bucket = f"""
+            cd {work_dir} && 3dbucket \
                 -DAFNI_NIFTI_VIEW=tlrc \
                 -prefix struct_ns \
                 awpy/struct_ns.aw.nii*
+            """
+        bucket_process = subprocess.Popen(h_bucket, shell=True, stdout=subprocess.PIPE)
+        print_process_output(bucket_process)
+        bucket_process.wait()
+        if bucket_process.returncode != 0:
+            raise Exception("Bucket failed")
 
-            cp awpy/anat.un.aff.Xat.1D .
+        h_cmd = f"""
+            cd {work_dir} && \
+            cp awpy/anat.un.aff.Xat.1D . && \
             cp awpy/anat.un.aff.qw_WARP.nii .
         """
-        func_sbatch(h_cmd, 1, 4, 4, f"{subj_num}dif", work_dir)
+        copy_process = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+        copy_process.wait()
+        if copy_process.returncode != 0:
+            raise Exception("Copy Failed")
 
 
 def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
@@ -413,7 +466,7 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
         ]
         h_list.sort()
         scan_dict[phase] = h_list
-    scan_list = flatten_list(list(scan_dict.values()))
+    scan_list = list(np.hstack(list(scan_dict.values())))
 
     for h_run in scan_list:
 
@@ -435,7 +488,13 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
                     -1Dmatrix_save mat.{run}.vr.aff12.1D \
                     {h_run}
             """
-            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}vre", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}vre", work_dir)
+            else:
+                h_vre = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                h_vre.wait()
+                if h_vre.returncode != 0:
+                    raise Exception("vre failed")
 
         # set up, warp EPI to template
         if not os.path.exists(os.path.join(work_dir, f"{run}_warp+tlrc.HEAD")):
@@ -446,6 +505,9 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
                 3dinfo -di {work_dir}/{run}+orig
             """
             h_gs = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+            h_gs.wait()
+            if h_gs.returncode != 0:
+                raise Exception("gs failed")
             h_gs_out = h_gs.communicate()[0]
             grid_size = h_gs_out.decode("utf-8").strip()
 
@@ -462,6 +524,8 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
             """
             h_cat = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_cat.wait()
+            if h_cat.returncode != 0:
+                raise Exception("cat failed")
 
             # warp epi, mask into template space
             nwarp_list = ["anat.un.aff.qw_WARP.nii", f"mat.{run}.warp.aff12.1D"]
@@ -478,7 +542,13 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
                     -nwarp '{" ".join(nwarp_list)}' \
                     -prefix {run}_warp
             """
-            func_sbatch(h_cmd, 2, 4, 4, f"{subj_num}war", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 2, 4, 4, f"{subj_num}war", work_dir)
+            else:
+                h_war = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                h_war.wait()
+                if h_war.returncode != 0:
+                    raise Exception("war failed")
 
         # Update - don't waste computation time warping
         #   simple mask into template space. Just make
@@ -501,6 +571,8 @@ def func_volreg_warp(work_dir, phase_list, subj_num, blip_tog):
             """
             h_mask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             h_mask.wait()
+            if h_mask.returncode != 0:
+                raise Exception("mask failed")
 
 
 def func_clean_volreg(work_dir, phase_list, subj_num):
@@ -531,7 +603,13 @@ def func_clean_volreg(work_dir, phase_list, subj_num):
                     -expr 'step(a-0.999)' \
                     -prefix {phase}_minVal_mask
             """
-            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}min", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}min", work_dir)
+            else:
+                dmean_process = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                dmean_process.wait()
+                if dmean_process.returncode != 0:
+                    raise Exception("3dmean failed")
 
         # make clean data
         for run in epi_list:
@@ -546,7 +624,14 @@ def func_clean_volreg(work_dir, phase_list, subj_num):
                         -expr 'a*b' \
                         -prefix {run}_volreg_clean
                 """
-                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}cle", work_dir)
+                if os.environ.get("SLURM") is not None:
+                    func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}cle", work_dir)
+                else:
+                    proc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                    print_process_output(proc)
+                    proc.wait()
+                    if proc.returncode != 0:
+                        raise Exception(f"d3calc failed for run {run}")
 
 
 def func_blur(work_dir, subj_num, blur_mult):
@@ -587,7 +672,14 @@ def func_blur(work_dir, subj_num, blur_mult):
                     -prefix {run}_blur \
                     {run}_volreg_clean+tlrc
             """
-            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}blur", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}blur", work_dir)
+            else:
+                merge_proc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                print_process_output(merge_proc)
+                merge_proc.wait()
+                if merge_proc.returncode != 0:
+                    raise Exception(f"3dmerge failed for run {run}")
 
 
 def func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir):
@@ -625,6 +717,8 @@ def func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir):
                 """
                 h_mask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
                 h_mask.wait()
+                if h_mask.returncode != 0:
+                    raise Exception(f"3dAutomask failed for run {run}")
 
         h_cmd = f"""
             cd {work_dir}
@@ -654,7 +748,14 @@ def func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir):
                 -no_automask tmp_mask_allRuns+tlrc tmp_mask_struct+tlrc | \
                 tee out.mask_ae_overlap.txt
         """
-        func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}uni", work_dir)
+        if os.environ.get("SLURM") is not None:
+            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}uni", work_dir)
+        else:
+            uni_proc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+            print_process_output(uni_proc)
+            uni_proc.wait()
+            if uni_proc.returncode != 0:
+                raise Exception("Uni proc failed")
 
     # Make tissue-class masks
     #   I like Atropos better than AFNI's way, so use those priors
@@ -691,7 +792,14 @@ def func_tiss_masks(work_dir, subj_num, atropos_dict, atropos_dir):
                     -input tmp_mask_{h_tiss}_eroded+orig \
                     -prefix final_mask_{h_tiss}_eroded
             """
-            func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}atr", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}atr", work_dir)
+            else:
+                mask_proc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                print_process_output(mask_proc)
+                mask_proc.wait()
+                if mask_proc.returncode != 0:
+                    raise Exception(f"mask proc failed for key {key}")
 
 
 def func_scale(work_dir, phase_list, subj_num):
@@ -717,7 +825,14 @@ def func_scale(work_dir, phase_list, subj_num):
                         -expr 'c * min(200, a/b*100)*step(a)*step(b)' \
                         -prefix {run}_scale
                 """
-                func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}scale", work_dir)
+                if os.environ.get("SLURM") is not None:
+                    func_sbatch(h_cmd, 1, 1, 1, f"{subj_num}scale", work_dir)
+                else:
+                    proc = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                    print_process_output(proc)
+                    proc.wait()
+                    if proc.returncode != 0:
+                        raise Exception(f"scaling failed for phase {phase} and run {run}")
 
 
 def func_argparser():
@@ -763,7 +878,7 @@ def main():
     """ Copy dset niftis to derivatives """
     check_func = os.path.join(work_dir, f"run-1_{phase_list[0]}+orig.HEAD")
     if not os.path.exists(check_func):
-        func_copy_data(subj, sess, work_dir, data_dir, phase_list)
+        func_copy_data(subj, sess, work_dir, data_dir, phase_list, blip_tog)
 
     """ Determine outlier voxels per volume """
     out_thresh = 0.1
@@ -781,7 +896,12 @@ def main():
         func_vrbase(work_dir, phase_list, blip_tog)
 
     """ Calculate normalization vectors """
-    atlas_dir = "/home/data/madlab/atlases/vold2_mni"
+    # "/home/data/madlab/atlases/vold2_mni"
+    atlas_path: str = os.environ.get("ATLAS_PATH", "")
+    if atlas_path == "":
+        raise Exception("ATLAS_PATH environment variable must be set")
+
+    atlas_dir = os.path.join(atlas_path, "vold2_mni")
     atlas = os.path.join(atlas_dir, "vold2_mni_brain+tlrc")
     check_diffeo = os.path.join(work_dir, "anat.un.aff.qw_WARP.nii")
     if not os.path.exists(check_diffeo):
