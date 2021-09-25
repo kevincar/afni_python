@@ -200,33 +200,37 @@ def func_motion(work_dir, phase, sub_num):
             cat dfile.run-*_{phase}.1D > dfile_rall_{phase}.1D
 
             # make motion files
+            echo "motion_demean"
             1d_tool.py \
                 -infile dfile_rall_{phase}.1D \
                 -set_nruns {num_run} \
                 -demean \
                 -write \
-                motion_demean_{phase}.1D
+                motion_demean_{phase}.1D || (echo "motion_demean failed"; exit 1)
 
+            echo "motion_deriv"
             1d_tool.py \
                 -infile dfile_rall_{phase}.1D \
                 -set_nruns {num_run} \
                 -derivative \
                 -demean \
                 -write \
-                motion_deriv_{phase}.1D
+                motion_deriv_{phase}.1D || (echo "motion_deriv failed"; exit 1)
 
+            echo "mot_demean"
             # split into runs
             1d_tool.py \
                 -infile motion_demean_{phase}.1D \
                 -set_nruns {num_run} \
                 -split_into_pad_runs \
-                mot_demean_{phase}
+                mot_demean_{phase} || (echo "mot_demeain failed" && exit 1)
 
+            echo "mot_deriv"
             1d_tool.py \
                 -infile motion_deriv_{phase}.1D \
                 -set_nruns {num_run} \
                 -split_into_pad_runs \
-                mot_deriv_{phase}
+                mot_deriv_{phase} || (echo "mot_deriv failed" && exit 1)
 
             # make censor file
             1d_tool.py \
@@ -235,7 +239,7 @@ def func_motion(work_dir, phase, sub_num):
                 -show_censor_count \
                 -censor_prev_TR \
                 -censor_motion 0.3 \
-                motion_{phase}
+                motion_{phase} || (echo "motion_phase failed" && exit 1)
 
             cat out.cen.run-*{phase}.1D > outcount_{phase}_censor.1D
 
@@ -245,7 +249,10 @@ def func_motion(work_dir, phase, sub_num):
                 -expr "a*b" > censor_{phase}_combined.1D
         """
         h_mot = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+        print_process_output(h_mot)
         h_mot.wait()
+        if h_mot.returncode != 0:
+            raise Exception(f"func_motion failed for subject {sub_num}")
 
 
 def func_decon(work_dir, phase, time_files, decon_type, sub_num):
@@ -276,22 +283,25 @@ def func_decon(work_dir, phase, time_files, decon_type, sub_num):
         x for x in os.listdir(work_dir) if fnmatch.fnmatch(x, f"mot_deriv_{phase}.*.1D")
     ]
     drv_list.sort()
+    print(drv_list)
 
     # write decon script for each phase of session
     #   desc = "single" is a place holder for when a session
     #   only has a single deconvolution
     if type(time_files) == list:
-
         desc = "single"
 
-        # make timing file dictionary
-        tf_dict = {}
+        # # make timing file dictionary
+        tf_dict: Dict[str, str] = {}
         for tf in time_files:
-            beh = tf.split("_")[-1].split(".")[0]
+            print(tf)
+            tf_name: str = os.path.splitext(tf)[0]
+            beh: str = tf_name.split("_")[-1]
             tf_dict[beh] = tf
 
         # write decon script (for review)
-        decon_script = os.path.join(work_dir, f"decon_{phase}_{desc}.sh")
+        decon_script_name: str = f"decon_{phase}_{desc}.sh"
+        decon_script: str = os.path.join(work_dir, decon_script_name)
         with open(decon_script, "w") as script:
             script.write(
                 func_write_decon(
@@ -330,21 +340,29 @@ def func_decon(work_dir, phase, time_files, decon_type, sub_num):
                         drv_list,
                     )
                 )
+    else:
+        raise Exception(
+            f"time_file of type {type(time_files)} unsupported. Must be dict or list"
+        )
 
     # gather scripts of phase
     script_list = [
-        x for x in os.listdir(work_dir) if fnmatch.fnmatch(x, f"decon_{phase}*.sh")
+      x for x in os.listdir(work_dir) if fnmatch.fnmatch(x, f"decon_{phase}*.sh")
     ]
 
     # run decon script to generate matrices
     for dcn_script in script_list:
+        dcn_script_path: str = os.path.join(work_dir, dcn_script)
         h_cmd = f"""
-            module load afni-20.2.06
-            cd {work_dir}
-            source {os.path.join(work_dir, dcn_script)}
+        module load afni-20.2.06
+        cd {work_dir}
+        source {dcn_script_path}
         """
         h_dcn = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+        print_process_output(h_dcn)
         h_dcn.wait()
+        if h_dcn.returncode != 0:
+            raise Exception(f"dcn_script {dcn_script} failed")
 
 
 def func_reml(work_dir, phase, sub_num, time_files):
@@ -358,7 +376,9 @@ def func_reml(work_dir, phase, sub_num, time_files):
     """
 
     # generate WM timeseries
-    if not os.path.exists(os.path.join(work_dir, f"{phase}_WMe_rall+tlrc.HEAD")):
+    WM_signal_file_name: str = f"{phase}_WMe_rall+tlrc.HEAD"
+    WM_signal_file_path: str = os.path.join(work_dir, WM_signal_file_name)
+    if not os.path.exists(WM_signal_file_path):
         h_cmd = f"""
             cd {work_dir}
 
@@ -377,7 +397,14 @@ def func_reml(work_dir, phase, sub_num, time_files):
                 -prefix {phase}_WMe_rall \
                 tmp_allRuns_{phase}_WMe+tlrc
         """
-        func_sbatch(h_cmd, 1, 4, 1, f"{sub_num}wts", work_dir)
+        if os.environ.get("SLURM") is not None:
+            func_sbatch(h_cmd, 1, 4, 1, f"{sub_num}wts", work_dir)
+        else:
+            proc_wm = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+            print_process_output(proc_wm)
+            proc_wm.wait()
+            if proc_wm.returncode != 0:
+                raise Exception("WM timeseries failed")
 
     # run REML for each phase of session
     if type(time_files) == list:
@@ -392,7 +419,14 @@ def func_reml(work_dir, phase, sub_num, time_files):
                     -dsort {phase}_WMe_rall+tlrc \
                     -GOFORIT
             """
-            func_sbatch(h_cmd, 25, 4, 6, f"{sub_num}rml", work_dir)
+            if os.environ.get("SLURM") is not None:
+                func_sbatch(h_cmd, 25, 4, 6, f"{sub_num}rml", work_dir)
+            else:
+                proc_reml = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
+                print_process_output(proc_reml)
+                proc_reml.wait()
+                if proc_reml.returncode != 0:
+                    raise Exception("REML failed")
 
     elif type(time_files) == dict:
         for desc in time_files:
