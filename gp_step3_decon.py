@@ -385,27 +385,31 @@ def func_argparser():
     parser.add_argument("pars_sess", help="Session")
     parser.add_argument("pars_type", help="Decon Type")
     parser.add_argument("pars_dir", help="Derivatives Directory")
+    parser.add_argument("decon_dict_path", help="Path to decon dict")
     return parser
 
 
 def main():
 
     # capture passed args
-    args = func_argparser().parse_args()
-    subj = args.pars_subj
-    sess = args.pars_sess
-    decon_type = args.pars_type
-    deriv_dir = args.pars_dir
+    args: Namespace = func_argparser().parse_args()
+    subj: str = args.pars_subj
+    sess: str = args.pars_sess
+    decon_type: str = args.pars_type
+    deriv_dir: str = args.pars_dir
+    decon_dict_path: str = args.decon_dict_path
 
     # set up
-    work_dir = os.path.join(deriv_dir, subj, sess)
-    sub_num = subj.split("-")[1]
+    subj_dir: str = os.path.join(deriv_dir, subj)
+    work_dir: str = os.path.join(subj_dir, sess)
+    sub_num: int = int(subj.split("-")[1])
 
-    """ Get time dict """
-    with open(os.path.join(work_dir, "decon_dict.json")) as json_file:
+    # """ Get time dict """
+    decon_dict: Dict
+    with open(decon_dict_path, "r") as json_file:
         decon_dict = json.load(json_file)
 
-    """ Submit job for each phase """
+    # """ Submit job for each phase """
     for phase in decon_dict:
 
         """Make motion files"""
@@ -426,5 +430,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# %%
