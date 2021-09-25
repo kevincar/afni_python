@@ -20,15 +20,16 @@ TODO:
 
 # %%
 import os
-import fnmatch
-import subprocess
 import re
 import json
-from argparse import ArgumentParser
+import fnmatch
+import subprocess
+from typing import Dict, List
+from argparse import ArgumentParser, Namespace
 from gp_step0_dcm2nii import func_sbatch
+from gp_step1_preproc import print_process_output
 
 
-# %%
 def func_write_decon(
     run_list, tf_dict, cen_file, phase, decon_type, desc, work_dir, dmn_list, drv_list
 ):
@@ -37,6 +38,27 @@ def func_write_decon(
         It supports GAM, 2GAM, TENT, and dmBLOCK basis functions.
         TENT does not currently include duration.
 
+    Parameters
+    ----------
+    run_list : List[str]
+        A list of run files for a given block and subject
+    tf_dict : Dict
+        dictionary where keys are the behaviors and the values are the
+        corresponding timing file names
+    cen_file : ?
+        ?
+    phase : ?
+        ?
+    decon_type : ?
+        ?
+    desc : ?
+        ?
+    work_dir : str
+        ?
+    dmn_list : ?
+        ?
+    drv_list : ?
+        ?
     """
 
     # build censor arguments
@@ -57,27 +79,37 @@ def func_write_decon(
     len_tr = float(h_len_tr.decode("utf-8").strip())
 
     # determine, build behavior regressors
-    switch_dict = {
+    switch_dict: Dict[str, List] = {
         "dmBLOCK": ["'dmBLOCK(1)'", "-stim_times_AM1"],
         "GAM": ["'GAM'", "-stim_times"],
         "2GAM": ["'TWOGAMpw(4,5,0.2,12,7)'", "-stim_times"],
+        "BLOCK": [lambda d: f"'BLOCK({d}, 1)'", "-stim_times"],
     }
 
     reg_beh = []
     for c_beh, beh in enumerate(tf_dict):
-        if decon_type == "dmBLOCK" or decon_type == "GAM" or decon_type == "2GAM":
+        if decon_type in ["dmBLOCK", "GAM", "2GAM", "BLOCK"]:
+
+            switch_data: List = switch_dict[decon_type]
+            switch_cmd: str = switch_data[1]
+            switch_rmodel: str = (
+                switch_data[0] if decon_type != "BLOCK" else switch_data[0](5)
+            )
+            beh_count: int = c_beh + 1
+            timing_file_name: str = tf_dict[beh]
+            timing_file_path: str = os.path.join("timing_files", timing_file_name)
 
             # add stim_time info, order is
             #   -stim_times 1 tf_beh.txt basisFunction
-            reg_beh.append(switch_dict[decon_type][1])
-            reg_beh.append(f"{c_beh + 1}")
-            reg_beh.append(f"timing_files/{tf_dict[beh]}")
-            reg_beh.append(switch_dict[decon_type][0])
+            reg_beh.append(switch_cmd)
+            reg_beh.append(f"{beh_count}")
+            reg_beh.append(timing_file_path)
+            reg_beh.append(switch_rmodel)
 
             # add stim_label info, order is
             #   -stim_label 1 beh
             reg_beh.append("-stim_label")
-            reg_beh.append(f"{c_beh + 1}")
+            reg_beh.append(f"{beh_count}")
             reg_beh.append(beh)
 
         elif decon_type == "TENT":
