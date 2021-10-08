@@ -11,12 +11,13 @@ phase_list = list of phases gathered within a single session.
 """
 # %%
 import os
+import sys
 import json
 import time
 import fnmatch
 import subprocess
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime
 from argparse import ArgumentParser, Namespace
 from gp_step1_preproc import print_process_output
@@ -36,6 +37,7 @@ def main():
     parser.add_argument("-c", "--code", required=True)
     parser.add_argument("-p", "--parent", required=True)
     parser.add_argument("-s", "--sessiondatafile", required=True)
+    parser.add_argument("-n", "--batchsize", type=int, default=10)
     parser.add_argument("-b", "--blip", type=int, default=0)
     args: Namespace = parser.parse_args()
 
@@ -43,6 +45,7 @@ def main():
     code_dir: str = args.code
     parent_dir: str = args.parent
     session_file_path: str = args.sessiondatafile
+    batch_size: int = args.batchsize
     blip_toggle: int = args.blip
     sess_dict: Dict
     with open(session_file_path, "r") as fh:
@@ -79,52 +82,59 @@ def main():
 
     # make batch list
     batch_list: List
-    if len(run_list) > 10:
-        batch_list = run_list[0:10]
+    if len(run_list) > batch_size:
+        batch_list = run_list[0:batch_size]
     else:
         batch_list = run_list
 
     for subj in batch_list:
         for sess in sess_dict:
 
+            subj_num: int = int(subj.split("-")[1])
+            job_name: str = f"GP1{subj_num}"
+            time_limit: str = "10:00:00"
+            memory: int = 4000
             h_out: str = os.path.join(out_dir, f"out_{subj}_{sess}.txt")
             h_err: str = os.path.join(out_dir, f"err_{subj}_{sess}.txt")
             code_file_path: str = os.path.join(code_dir, "gp_step1_preproc.py")
             phases_str: str = " ".join(sess_dict[sess])
             sess = sess if sess != "" else '""'
-            h_cmd: str = f"""
-            python {code_file_path} \
-                    {subj} \
-                    {sess} \
-                    {parent_dir} \
-                    {blip_toggle} \
-                    {phases_str}
-            """
+            h_cmd: str = f"{sys.executable} {code_file_path} {subj} {sess} {parent_dir} {blip_toggle} {phases_str}"
 
-            if os.environ.get("SLURM") is not None:
-                sbatch_job = f"""
-                    sbatch \
-                        -J "GP1{subj.split("-")[1]}" \
-                        -t 10:00:00 \
-                        --mem=4000 \
-                        --ntasks-per-node=1 \
-                        -p IB_44C_512G  \
-                        -o {h_out} -e {h_err} \
-                        --account iacc_madlab \
-                        --qos pq_madlab \
-                        --wrap="module load python-3.7.0-gcc-8.2.0-joh2xyk \n \
-                        python {code_dir}/gp_step1_preproc.py \
-                            {subj} \
-                            {sess} \
-                            {parent_dir} \
-                            {blip_toggle} \
-                            {' '.join(sess_dict[sess])}"
-                """
-                sbatch_submit = subprocess.Popen(
-                    sbatch_job, shell=True, stdout=subprocess.PIPE
-                )
-                job_id = sbatch_submit.communicate()[0]
-                print(job_id.decode("utf-8"))
+            hpc: Optional[str] = os.environ.get("HPC")
+            if hpc is not None:
+                if hpc == "SLURM":
+                    sbatch_job = f"""
+                        sbatch \
+                            -J "{job_name}" \
+                            -t {time_limit} \
+                            --mem={memory} \
+                            --ntasks-per-node=1 \
+                            -p IB_44C_512G  \
+                            -o {h_out} -e {h_err} \
+                            --account iacc_madlab \
+                            --qos pq_madlab \
+                            --wrap="module load python-3.7.0-gcc-8.2.0-joh2xyk \n \
+                            python {code_dir}/gp_step1_preproc.py \
+                                {subj} \
+                                {sess} \
+                                {parent_dir} \
+                                {blip_toggle} \
+                                {' '.join(sess_dict[sess])}"
+                    """
+                    sbatch_submit = subprocess.Popen(
+                        sbatch_job, shell=True, stdout=subprocess.PIPE
+                    )
+                    job_id = sbatch_submit.communicate()[0]
+                    print(job_id.decode("utf-8"))
+                elif hpc == "QSUB":
+                    project_name: str = os.environ.get("PROJECT_NAME", "")
+                    qsub_job: str = f"qsub -b y -P {project_name} -N {job_name} -l h_rt={time_limit} -l mem_per_core={memory//1000}G -o {h_out} -e {h_err} {h_cmd}"
+                    print(f"running: {qsub_job}")
+                    qsub_proc: subprocess.Popen = subprocess.Popen(
+                        qsub_job, shell=True, stdout=subprocess.PIPE
+                    )
+                    print(qsub_proc.communicate()[0].decode("utf-8"))
                 time.sleep(1)
             else:
                 proc: subprocess.Popen = subprocess.Popen(
