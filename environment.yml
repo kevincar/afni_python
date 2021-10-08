@@ -1,0 +1,14 @@
+name: afni
+channels:
+  - defaults
+dependencies:
+  - pip:
+    - numpy==1.21.2
+    - pandas==1.3.3
+    - python-dateutil==2.8.2
+    - pytz==2021.1
+variables:
+    # ATLAS_PATH: $DATA/atlas
+    # DATA_PATH: $DATA
+    # HPC: SLURM | QSUB
+  # PROJECT_NAME: <Name of your computing resource project or account>
