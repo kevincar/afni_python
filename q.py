@@ -14,6 +14,7 @@ def qsub(
     job_name: Optional[str] = None,
     time_limit: Optional[str] = None,
     memory: Optional[int] = None,
+    cores: Optional[int] = None,
     stdout_file: Optional[str] = None,
     stderr_file: Optional[str] = None,
 ):
@@ -27,6 +28,7 @@ def qsub(
         f"#$ -N {job_name}" if job_name else "",
         f"#$ -l h_rt={time_limit}" if time_limit else "",
         f"#$ -l mem_per_core={memory}G" if memory else "",
+        f"#$ -pe omp {cores}" if cores else "",
         f"#$ -o {stdout_file}" if stdout_file else "",
         f"#$ -e {stderr_file}" if stderr_file else "",
         "",
@@ -43,6 +45,7 @@ def qsub(
     q_cmd: str = f"qsub -V {script_name}"
 
     q_proc: subprocess.CompletedProcess = subprocess.run(q_cmd.split(" "), text=True)
+    print(f"Running: {cmd}")
     print(q_proc.stdout)
 
     os.remove(script_name)
