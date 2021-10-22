@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from argparse import ArgumentParser, Namespace
 from gp_step1_preproc import print_process_output
+from q import qsub
 
 # set up
 # code_dir = "/home/nmuncy/compute/learn_mvpa"
@@ -129,12 +130,13 @@ def main():
                     print(job_id.decode("utf-8"))
                 elif hpc == "QSUB":
                     project_name: str = os.environ.get("PROJECT_NAME", "")
-                    qsub_job: str = f"qsub -b y -P {project_name} -N {job_name} -l h_rt={time_limit} -l mem_per_core={memory//1000}G -o {h_out} -e {h_err} {h_cmd}"
-                    print(f"running: {qsub_job}")
-                    qsub_proc: subprocess.Popen = subprocess.Popen(
-                        qsub_job, shell=True, stdout=subprocess.PIPE
-                    )
-                    print(qsub_proc.communicate()[0].decode("utf-8"))
+                    qsub(h_cmd, project_name=project_name,
+                         job_name=job_name,
+                         time_limit=time_limit,
+                         memory=int(memory / 1000),
+                         cores=4,
+                         stdout_file=h_out,
+                         stderr_file=h_err)
                 time.sleep(1)
             else:
                 proc: subprocess.Popen = subprocess.Popen(
