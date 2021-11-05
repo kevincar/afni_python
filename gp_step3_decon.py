@@ -442,6 +442,10 @@ def func_reml(work_dir, phase, sub_num, time_files):
                 """
                 func_sbatch(h_cmd, 25, 4, 6, f"{sub_num}rml", work_dir)
 
+def generate_outputs():
+    """
+    generate relavant output files for the deconvolution process
+    """
 
 # %%
 # receive arguments
