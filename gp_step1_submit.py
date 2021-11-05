@@ -93,7 +93,7 @@ def main():
 
             subj_num: int = int(subj.split("-")[1])
             job_name: str = f"GP1{subj_num}"
-            time_limit: str = "10:00:00"
+            time_limit: str = "20:00:00"
             memory: int = 4000
             h_out: str = os.path.join(out_dir, f"out_{subj}_{sess}.txt")
             h_err: str = os.path.join(out_dir, f"err_{subj}_{sess}.txt")
