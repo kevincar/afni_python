@@ -365,6 +365,95 @@ def func_decon(work_dir, phase, time_files, decon_type, sub_num):
             raise Exception(f"dcn_script {dcn_script} failed")
 
 
+def calc_snr_corr(work_dir: str, phase: str, subj: str):
+    """
+    This is run as after REML to compute the signal-to-noise ratio and the
+    correlation.
+
+    Parameters
+    ----------
+    work_dir : str
+        The working directory where all files are processed
+    phase : str
+        The name of the current phase
+    subj : str
+        The identifier of the current subject
+    """
+    out_file_name: str = f"{phase}_TSNR+tlrc.HEAD"
+    out_file_path: str = os.path.join(work_dir, out_file_name)
+
+    if os.path.exists(out_file_path):
+        return
+
+    # Obtain count bricks
+    count_cmd: str = f"1d_tool.py -infile censor_{phase}_combined.1D -show_trs_uncensored encoded"
+    print(f"Running {count_cmd}")
+    count_proc: subprocess.Popen = subprocess.Popen(count_cmd, cwd=work_dir, shell=True, stdout=subprocess.PIPE)
+    count_proc.wait()
+    if count_proc.returncode != 0:
+        raise Exception("Counting failed")
+    out_bytes: bytearray = bytearray(count_proc.stdout.readline())
+    out_str: str = out_bytes.decode("utf-8")
+    brick_range: str = out_str.rstrip()
+    print(f"Range: {brick_range}")
+
+    # all runs signal
+    all_runs_cmds: List[str] = [
+        f"3dTcat -prefix tmp_{phase}_all_runs run-*{phase}_scale+tlrc.HEAD",
+        f"3dTstat -mean -prefix tmp_{phase}_allSignal tmp_{phase}_all_runs+tlrc\"[{brick_range}]\""
+    ]
+    all_runs_cmd: str = "\n".join(all_runs_cmds)
+    all_runs_proc: subprocess.Popen = subprocess.Popen(all_runs_cmd, cwd=work_dir, shell=True, stdout=subprocess.PIPE)
+    all_runs_proc.wait()
+    if all_runs_proc.returncode != 0:
+        raise Exception("Failed to run all runs")
+
+    cmds: List[str] = [
+        f"3dTstat -stdev -prefix tmp_{phase}_allNoise {phase}_single_errts_REML+tlrc\"[{brick_range}]\"",
+        f"3dcalc -a tmp_{phase}_allSignal+tlrc -b tmp_{phase}_allNoise+tlrc -c tmp_mask_allRuns+tlrc -expr 'c*a/b' -prefix {phase}_TSNR",
+        f"3dTnorm -norm2 -prefix tmp_{phase}_errts_unit {phase}_single_errts_REML+tlrc",
+        f"3dmaskave -quiet -mask tmp_mask_allRuns+tlrc tmp_{phase}_errts_unit+tlrc > {phase}_gmean_errts_unit.1D",
+        f"3dcalc -a tmp_{phase}_errts_unit+tlrc -b {phase}_gmean_errts_unit.1D -expr 'a*b' -prefix tmp_{phase}_DP",
+        f"3dTstat -sum -prefix {phase}_corr_brain tmp_{phase}_DP+tlrc"
+    ]
+    cmd: str = "\n".join(cmds)
+    calc_proc: subprocess.Popen = subprocess.Popen(cmd, cwd=work_dir, shell=True, stdout=subprocess.PIPE)
+    calc_proc.wait()
+    if calc_proc.returncode != 0:
+        raise Exception("Calculation failed")
+
+    # Generate Script
+    dset: str = f"{phase}_single_stats_REML+tlrc"
+    script_cmd_args: List[str] = [
+        "gen_ss_review_scripts.py",
+        f"-subj ${subj}",
+        "-rm_trs 0",
+        f"-motion_dset dfile_rall_{phase}.1D",
+        f"-outlier_dset outcount_all.1D",
+        f"-enorm_dset motion_{phase}_enorm.1D",
+        "-mot_limit 0.3",
+        "-out_limit 0.1",
+        f"-xmat_regress X.{phase}_single.xmat.1D",
+        f"-xmat_uncensored X.{phase}_single.nocensor.xmat.1D",
+        f"-stats_dset {dset}",
+        "-final_anat final_anat+tlrc",
+        "-final_view tlrc",
+        "-exit0"
+    ]
+    script_gen_cmd: str = " ".join(script_cmd_args)
+    script_proc: subprocess.Popen = subprocess.Popen(script_gen_cmd, cwd=work_dir, shell=True, stdout=subprocess.PIPE)
+    script_proc.wait()
+    if script_proc.returncode != 0:
+        raise Exception("Script generator failed")
+
+    # Run Script
+    script_cmd: str = f"./@ss_review_basic | tee out_summary_{phase}.txt"
+    script_proc = subprocess.Popen(script_cmd, cwd=work_dir, shell=True, stdout=subprocess.PIPE)
+    script_proc.wait()
+    if script_proc.returncode != 0:
+        raise Exception("Failed to run script")
+
+
 def func_reml(work_dir, phase, sub_num, time_files):
 
     """
@@ -496,6 +585,8 @@ def main():
         reml_check = os.path.join(work_dir, f"{phase}_single_stats_REML+tlrc.HEAD")
         if not os.path.exists(reml_check):
             func_reml(work_dir, phase, sub_num, time_files)
+
+        calc_snr_corr(work_dir, phase, subj)
 
 
 if __name__ == "__main__":
