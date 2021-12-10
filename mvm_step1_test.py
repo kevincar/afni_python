@@ -2,14 +2,66 @@
 import os
 import json
 import fnmatch
+import shutil
 import subprocess
+import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
 from argparse import ArgumentParser, Namespace
 from gp_step1_preproc import func_sbatch
+from afni import (
+    c3d,
+    afni_3dcopy,
+    afni_3dmean,
+    afni_3dmask_tool,
+    afni_3drefit,
+    afni_3dresample
+)
 
 
-def filter_outlier_subects(
+def gather_num_censored_trs(
+        subj_list: List[str],
+        deriv_dir: str,
+        sess: str,
+        phase: str) -> pd.DataFrame:
+    """
+    Gather the number of censored TRs and their proportions. This is used for
+    determining subjects that are outliers.
+
+    Paramount
+    ---------
+    subj_list : List[str]
+        List of subject identifiers
+    deriv_dir : str
+        Data directory
+    sess : str
+        Session for analysis
+    phase : str
+        Phase for alaysis
+
+    Returns
+    -------
+    pd.DataFrame
+        Information on the subject, their censored TRs and fractions
+    """
+    info: pd.DataFrame = pd.DataFrame(columns=["Subject", "N Centers", "Proportion"])
+
+    for subj in subj_list:
+        summary_file_name: str = f"out_summary_{phase}.txt"
+        summary_file_path: str = os.path.join(deriv_dir, subj, sess, summary_file_name)
+        summary_data: pd.DataFrame = pd.read_csv(summary_file_path, sep=":", names=["Key", "Value"])
+        data_values: np.ndarray = summary_data.values
+        summary_dict: Dict = {row[0].strip(): row[1].strip() for row in data_values}
+
+        centers: int = int(summary_dict["TRs censored"])
+        fraction: float = float(summary_dict["censor fraction"])
+        info = info.append({"Subject": subj, "N Centers": centers, "Proportion": fraction}, ignore_index=True)
+        info = info.astype({"Subject": str, "N Centers": int, "Proportion": float})
+
+    return info
+
+
+def filter_outlier_subjects(
         subj_list: List[str],
         deriv_dir: str,
         sess: str,
@@ -36,10 +88,141 @@ def filter_outlier_subects(
     """
     reference_subject: str = next(iter(subj_list))
     reference_directory: str = os.path.join(deriv_dir, reference_subject)
-    decon_list: List[str] = [f for f in os.listdir(reference_directory) if "stats_REML+tlrc.HEAD" in f]
-    subject_data_info: pd.DataFrame = pd.DataFrame(columns=["Subject", "N Centers", "Proper Center"])
-    decon_list, subject_data_info
-    return []
+    decon_list: List[str] = [
+        f[:f.find("_")] for f in os.listdir(reference_directory)
+        if "stats_REML+tlrc.HEAD" in f
+    ]
+
+    result: List[str] = subj_list
+    for decon_name in decon_list:
+        subject_data_info: pd.DataFrame = gather_num_censored_trs(subj_list, deriv_dir, sess, phase)
+        stats: pd.DataFrame = subject_data_info.describe()
+        lower: pd.Series = stats.loc["25%"]
+        med: pd.Series = stats.loc["50%"]
+        upper: pd.Series = stats.loc["75%"]
+        IQR: pd.Series = upper - lower
+        IQR15: pd.Series = IQR * 1.5
+        max_limit: pd.Series = med + IQR15
+        center_max: float = max_limit["N Centers"]
+        outlier_data: pd.DataFrame = subject_data_info[subject_data_info["N Centers"] > center_max]
+        outlier_subjects_series: pd.Series = outlier_data["Subject"]
+        outlier_subjects: List[str] = outlier_subjects_series.values.tolist()
+        result = [s for s in result if s not in outlier_subjects]
+
+    return result
+
+
+def create_group_intersection_mask(
+        threshold: float,
+        group_dir: str,
+        subj_list: List[str],
+        deriv_dir: str,
+        sess: str,
+        phase: str):
+    """
+    Generate a group intersection mask
+
+    Parameters
+    ----------
+    threshold : float
+        The mask threshold
+    group_dir : str
+        The directory used for holding group analysis files
+    subj_list : List[str]
+        A list of subjects to include in the intersection mask
+    deriv_dir : str
+        Path to the working data directory
+    sess : str
+        The name of the current session being analyzed
+    phase : str
+        The name of the current phase being analyzed
+    """
+    out_file_name: str = "Group_intersect_mask.nii.gz"
+    out_file_path: str = os.path.join(group_dir, out_file_name)
+
+    if os.path.exists(out_file_path):
+        return
+
+    included_subj_list: List[str] = filter_outlier_subjects(subj_list, deriv_dir, sess, phase)
+    mask_files: List[str] = [
+        os.path.join(deriv_dir, subj, sess, "mask_epi_anat+tlrc")
+        for subj in included_subj_list
+        if os.path.exists(os.path.join(deriv_dir, subj, sess, "mask_epi_anat+tlrc.HEAD"))
+    ]
+    print(included_subj_list)
+
+    prefix: str = "Group_intersect_mean.nii.gz"
+    afni_3dmean(*mask_files, prefix=prefix, cwd=group_dir)
+    afni_3dmask_tool(input=mask_files, frac=threshold, prefix=out_file_name, cwd=group_dir)
+
+
+def create_gray_matter_input(prior_dir: str) -> str:
+    """
+    Generate a gray matter input
+
+    Parameters
+    ----------
+    prior_dir : str
+        Path to the location of prior template scans
+
+    Returns
+    -------
+    str
+        The path to the generated gray matter file
+    """
+    gm_target_file_path: str = os.path.join(prior_dir, "GM.nii.gz")
+    if os.path.exists(gm_target_file_path):
+        return gm_target_file_path
+
+    prior_file_nums: List[int] = [2, 4]
+    prior_file_names: List[str] = [f"Prior{n}.nii.gz" for n in prior_file_nums]
+    prior_file_paths: List[str] = [os.path.join(prior_dir, fn) for fn in prior_file_names]
+    c3d(prior_file_paths[0], prior_file_paths[1], add="", o=gm_target_file_path, cwd=prior_dir)
+    return gm_target_file_path
+
+
+def create_gm_intersection_mask(group_dir: str, ref_file: str, gm_file: str):
+    """
+    Combines the intersection and gray matter input
+
+    Parameters
+    ----------
+    group_dir : str
+        Location for group data analysis files
+    ref_file : str
+        A reference file to use for generating the mask
+    gm_file : str
+        A path to the gray matter file
+    """
+    out_dset_name: str = "Group_GM_intersect_mask+tlrc"
+    out_file_name: str = f"{out_dset_name}.HEAD"
+    out_file_path: str = os.path.join(group_dir, out_file_name)
+
+    if os.path.exists(out_file_path):
+        return
+
+    prefix: str = "tmp_GM_mask.nii.gz"
+
+    if not os.path.exists(os.path.join(group_dir, prefix)):
+        afni_3dresample(master=ref_file, rmode="NN", input=gm_file, prefix=prefix, cwd=group_dir)
+    c3d(prefix, "Group_intersect_mask.nii.gz", multiply="", o="tmp_GM_intersect_prob_mask.nii.gz", cwd=group_dir)
+    c3d("tmp_GM_intersect_prob_mask.nii.gz", thresh="0.1 1 1 0", o="tmp_GM_intersect_mask.nii.gz", cwd=group_dir)
+    afni_3dcopy("tmp_GM_intersect_mask.nii.gz", out_dset_name, cwd=group_dir)
+    afni_3drefit(out_dset_name, space="MNI", cwd=group_dir)
+
+    # cmds: List[str] = [
+    # f"cd {group_dir}",
+    # f"3dresample -master {ref_file} -rmode NN -input {gm_file} -prefix {prefix}",
+    # f"c3d {prefix} Group_intersect_mask.nii.gz -multiply -o tmp_GM_intersect_prob_mask.nii.gz",
+    # "c3d tmp_GM_intersect_prob_mask.nii.gz -thresh 0.1 1 1 0 -o tmp_GM_intersect_mask.nii.gz",
+    # "3dcopy tmp_GM_intersect_mask.nii.gz Group_GM_intersect_mask+tlrc",
+    # "3drefit -space MNI Group_GM_intersect_mask+tlrc"
+    # ]
+    # cmd: str = "\n".join(cmds)
+    # gm_mask_proc: subprocess.Popen = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    # gm_mask_proc.wait()
+    # if gm_mask_proc.returncode != 0:
+    # raise Exception("GM Intersection Mask failed")
 
 
 def func_mask(subj_list, deriv_dir, sess, phase, atlas_dir, prior_dir, group_dir):
@@ -47,80 +230,10 @@ def func_mask(subj_list, deriv_dir, sess, phase, atlas_dir, prior_dir, group_dir
     # set ref file for resampling
     ref_file = os.path.join(deriv_dir, subj_list[1], sess, f"run-1_{phase}_scale+tlrc")
 
-    # make group intersection mask
-    if not os.path.exists(os.path.join(group_dir, "Group_intersect_mask.nii.gz")):
-
-        mask_list = []
-        for subj in subj_list:
-            mask_file = os.path.join(deriv_dir, subj, sess, "mask_epi_anat+tlrc")
-            if os.path.exists(f"{mask_file}.HEAD"):
-                mask_list.append(mask_file)
-
-        threshold = 0.3
-        h_cmd = f"""
-            module load afni-20.2.06
-            cd {group_dir}
-
-            cp {atlas_dir}/emu_template* .
-            3dMean -prefix Group_intersect_mean.nii.gz {" ".join(mask_list)}
-            3dmask_tool \
-                -input {" ".join(mask_list)} \
-                -frac {threshold} \
-                -prefix Group_intersect_mask.nii.gz
-        """
-        h_mask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-        h_mask.wait()
-        if h_mask.returncode != 0:
-            raise Exception("Group intersection Mask failed")
-
-    # make GM input
-    gm_target_file_path: str = os.path.join(prior_dir, "GM.nii.gz")
-    if not os.path.exists(gm_target_file_path):
-        prior_file_nums: List[int] = [2, 4]
-        prior_file_names: List[str] = [f"Prior{n}.nii.gz" for n in prior_file_nums]
-        prior_file_paths: List[str] = [os.path.join(prior_dir, fn) for fn in prior_file_names]
-        h_cmd = f"""
-            c3 {prior_file_paths[0]} {prior_file_paths[1]} -add -o {gm_target_file_path}
-        """
-        h_gm = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-        h_gm.wait()
-        if h_gm.returncode != 0:
-            raise Exception("Group intersection mask priors failed")
-
-    # make GM intersection mask
-    if not os.path.exists(os.path.join(group_dir, "Group_GM_intersect_mask+tlrc.HEAD")):
-        h_cmd = f"""
-            module load afni-20.2.06
-            module load c3d-1.0.0-gcc-8.2.0
-            cd {group_dir}
-
-            3dresample \
-                -master {ref_file} \
-                -rmode NN \
-                -input {gm_target_file_path} \
-                -prefix tmp_GM_mask.nii.gz
-
-            c3d \
-                tmp_GM_mask.nii.gz Group_intersect_mask.nii.gz \
-                -multiply \
-                -o tmp_GM_intersect_prob_mask.nii.gz
-
-            c3d \
-                tmp_GM_intersect_prob_mask.nii.gz \
-                -thresh 0.1 1 1 0 \
-                -o tmp_GM_intersect_mask.nii.gz
-
-            3dcopy tmp_GM_intersect_mask.nii.gz Group_GM_intersect_mask+tlrc
-            3drefit -space MNI Group_GM_intersect_mask+tlrc
-
-            if [ -f Group_GM_intersect_mask+tlrc.HEAD ]; then
-                rm tmp_*
-            fi
-        """
-        h_GMmask = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
-        h_GMmask.wait()
-        if h_GMmask.returncode != 0:
-            raise Exception("GMMask failed")
+    create_group_intersection_mask(0.3, group_dir, subj_list, deriv_dir, sess, phase)
+    gray_matter_file_path: str = create_gray_matter_input(prior_dir)
+    print(f"GMFILE: {gray_matter_file_path}")
+    create_gm_intersection_mask(group_dir, ref_file, gray_matter_file_path)
 
 
 def build_data_table(
@@ -166,7 +279,7 @@ def build_data_table(
     data_table: pd.DataFrame = pd.DataFrame(columns=headers)
     for idx, subject_id in enumerate(subj_list):
         session_path: str = os.path.join(deriv_dir, subject_id, sess)
-        for behavior, behavior_timepoint in beh_dict:
+        for behavior, behavior_timepoint in beh_dict.items():
             input_file_name: str = f"{phase}_signle_stats_REML+tlrc[{behavior_timepoint}]"
             input_file_path: str = os.path.join(session_path, input_file_name)
             data_row: List[str] = [subject_id, behavior, input_file_path]
@@ -175,7 +288,8 @@ def build_data_table(
                 subject_bs_factor: str = bs_factors[idx]
                 data_row.insert(1, subject_bs_factor)
 
-            data_table = data_table.append([data_row])
+            data_row_table: pd.DataFrame = pd.DataFrame([data_row], columns=data_table.columns)
+            data_table = data_table.append(data_row_table)
 
     return data_table
 
@@ -244,8 +358,11 @@ def func_mvm(
             glt_code_bs: str = f"BSVARS: 1*{bs0} -1*{bs1}"
             ws_vars = test_conditions[1]
             ws0 = ws_vars[0]
-            ws1 = ws_vars[1]
-            glt_code_ws = f"WSVARS: 1*{ws0} -1*{ws1}"
+            if len(ws_vars) > 1:
+                ws1 = ws_vars[1]
+                glt_code_ws = f"WSVARS: 1*{ws0}"
+            else:
+                glt_code_ws = f"WSVARS: 1*{ws0} -1*{ws1}"
             glt_code_cmd = f"'{glt_code_bs} {glt_code_ws}'"
             glt_code_cmd
 
@@ -283,6 +400,8 @@ def func_mvm(
             if proc.returncode != 0:
                 raise Exception("Failed to run 3dMVM")
 
+    print("MVM Done")
+
 
 def func_acf(subj, subj_file, group_dir, acf_file):
     h_cmd = f"""
@@ -297,7 +416,7 @@ def func_acf(subj, subj_file, group_dir, acf_file):
     if hpc is not None:
         if hpc == "SLURM":
             func_sbatch(h_cmd, 2, 4, 1, f"a{subj.split('-')[-1]}", group_dir)
-        elif hpc == "QSUM":
+        elif hpc == "QSUB":
             acf_proc: subprocess.Popen = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             acf_proc.wait()
             if acf_proc.returncode != 0:
@@ -330,6 +449,8 @@ def func_clustSim(group_dir, acf_file, mc_file):
             cluster_proc.wait()
             if cluster_proc.returncode != 0:
                 raise Exception("cluster proc failed")
+
+    print("clusterStim Done")
 
 
 def func_argparser() -> ArgumentParser:
@@ -365,12 +486,23 @@ def main():
     subj_list: List[str] = [x for x in os.listdir(deriv_dir) if fnmatch.fnmatch(x, "sub-*")]
 
     beh_dict_file_name: str = "beh_dict.json"
+    glt_dict_file_name: str = "glt_dict.json"
+
+    docs_dir: str = os.path.join(parent_dir, "docs")
+    beh_dict_path: str = os.path.join(docs_dir, beh_dict_file_name)
+    glt_dict_path: str = os.path.join(docs_dir, glt_dict_file_name)
+
     beh_dict_file_path: str = os.path.join(group_dir, beh_dict_file_name)
+    if not os.path.exists(beh_dict_file_path):
+        shutil.copy(beh_dict_path, beh_dict_file_path)
+
+    glt_dict_file_path: str = os.path.join(group_dir, glt_dict_file_name)
+    if not os.path.exists(glt_dict_file_path):
+        shutil.copy(glt_dict_path, glt_dict_file_path)
+
     with open(beh_dict_file_path) as json_file:
         beh_dict = json.load(json_file)
 
-    glt_dict_file_name: str = "glt_dict.json"
-    glt_dict_file_path: str = os.path.join(group_dir, glt_dict_file_name)
     with open(glt_dict_file_path) as json_file:
         glt_dict = json.load(json_file)
 
@@ -385,26 +517,33 @@ def main():
     if not os.path.exists(mask_output_file_path):
         func_mask(subj_list, deriv_dir, sess, phase, atlas_dir, prior_dir, group_dir)
 
+    print("Mask done")
+
     """ run MVM """
     mvm_output_file_name: str = "MVM+tlrc.HEAD"
     mvm_output_file_path: str = os.path.join(group_dir, mvm_output_file_name)
     if not os.path.exists(mvm_output_file_path):
         func_mvm(beh_dict, glt_dict, subj_list, sess, phase, group_dir, deriv_dir, bs_factors)
 
+    print("MVM Done")
+
     """ get subj acf estimates """
     # define, start file
     acf_file = os.path.join(group_dir, "ACF_subj_all.txt")
-    if not os.path.exists(acf_file):
-        open(acf_file, "a").close()
+    # if not os.path.exists(acf_file):
+    open(acf_file, "w").close()
 
     # if file is empty, run func_acf for e/subj
     acf_size = os.path.getsize(acf_file)
     if acf_size == 0:
+        print("NICE")
         for subj in subj_list:
             subj_file = os.path.join(
                 deriv_dir, subj, sess, f"{phase}_single_errts_REML+tlrc"
             )
             func_acf(subj, subj_file, group_dir, acf_file)
+
+    print("ACF done")
 
     """ do clust simulations """
     mc_file = os.path.join(group_dir, "MC_thresholds.txt")
@@ -414,6 +553,8 @@ def main():
     mc_size = os.path.getsize(mc_file)
     if mc_size == 0:
         func_clustSim(group_dir, acf_file, mc_file)
+
+    print("clustSim done")
 
 
 if __name__ == "__main__":
