@@ -32,7 +32,6 @@ def qsub(
         f"#$ -o {stdout_file}" if stdout_file else "",
         f"#$ -e {stderr_file}" if stderr_file else "",
         "",
-        "mb",
         f"{cmd}",
     ]
 
