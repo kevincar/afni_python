@@ -280,7 +280,7 @@ def build_data_table(
     for idx, subject_id in enumerate(subj_list):
         session_path: str = os.path.join(deriv_dir, subject_id, sess)
         for behavior, behavior_timepoint in beh_dict.items():
-            input_file_name: str = f"{phase}_signle_stats_REML+tlrc[{behavior_timepoint}]"
+            input_file_name: str = f"{phase}_single_stats_REML+tlrc[{behavior_timepoint}]"
             input_file_path: str = os.path.join(session_path, input_file_name)
             data_row: List[str] = [subject_id, behavior, input_file_path]
 
@@ -329,9 +329,9 @@ def func_mvm(
         An optional list of between-subject factors. This list should be the
         same length as `subj_list`
     """
-    has_bs_factors: bool = len(bs_factors) < 1
+    has_bs_factors: bool = len(bs_factors) > 1
 
-    data_table: pd.DataFrame = build_data_table(subj_list, deriv_dir, beh_dict, sess, phase, bs_factors)
+    data_table: pd.DataFrame = build_data_table(subj_list, deriv_dir, beh_dict, phase, sess, bs_factors)
     data_table_arguments_list: List[str] = data_table.values.flatten().tolist()
     data_table_arguments: str = " ".join(data_table_arguments_list)
     data_table_headers: str = " ".join(data_table.columns.tolist())
@@ -344,29 +344,30 @@ def func_mvm(
 
         test_conditions: List = glt_dict[test_name]
 
-        bs_vars: List[str] = []
-        ws_vars: List[str] = test_conditions
-        ws0: str = ws_vars[0]
-        ws1: str = ws_vars[1]
-        glt_code_ws: str = f"WSVARS: 1*{ws0} -1*{ws1}"
-        glt_code_cmd: str = r"'{glt_code_ws}'"
-
-        if has_bs_factors:
+        if not has_bs_factors:
+            bs_vars: List[str] = []
+            ws_vars: List[str] = test_conditions
+            ws0: str = ws_vars[0]
+            ws1: str = ws_vars[1]
+            glt_code_ws: str = f"WSVARS: 1*{ws0} -1*{ws1}"
+            glt_code_cmd: str = f"'{glt_code_ws}'"
+        else:
             bs_vars = test_conditions[0]
             bs0: str = bs_vars[0]
             bs1: str = bs_vars[1]
             glt_code_bs: str = f"BSVARS: 1*{bs0} -1*{bs1}"
+
             ws_vars = test_conditions[1]
             ws0 = ws_vars[0]
             if len(ws_vars) > 1:
                 ws1 = ws_vars[1]
-                glt_code_ws = f"WSVARS: 1*{ws0}"
-            else:
                 glt_code_ws = f"WSVARS: 1*{ws0} -1*{ws1}"
+            else:
+                glt_code_ws = f"WSVARS: 1*{ws0}"
             glt_code_cmd = f"'{glt_code_bs} {glt_code_ws}'"
             glt_code_cmd
 
-        glt_code_arg: str = "-gltCode {count} {glt_code_cmd}"
+        glt_code_arg: str = f"-gltCode {count} {glt_code_cmd}"
         glt_cmd: str = f"{glt_label_arg} {glt_code_arg}"
         glt_list.append(glt_cmd)
 
@@ -391,10 +392,12 @@ def func_mvm(
             {data_table_arguments}
     """
     hpc: Optional[str] = os.environ.get("HPC")
+    print(f"HPC: {hpc}")
     if hpc is not None:
         if hpc == "SLURM":
             func_sbatch(h_cmd, 2, 6, 10, "cMVM", group_dir)
-        elif hpc == "QSUM":
+        elif hpc == "QSUB":
+            print(f"cmd: {h_cmd}")
             proc: subprocess.Popen = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             proc.wait()
             if proc.returncode != 0:
@@ -508,7 +511,7 @@ def main():
 
     bs_factors: List[str] = []
     if bs_factors_file_path:
-        bs_factors_df: pd.DataFrame = pd.read_csv(bs_factors_file_path, headers=None)
+        bs_factors_df: pd.DataFrame = pd.read_csv(bs_factors_file_path, header=None)
         bs_factors = bs_factors_df.values.flatten().tolist()
 
     """ make group gray matter intreset mask """

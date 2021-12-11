@@ -35,6 +35,7 @@ def main():
     parser.add_argument("-b", "--prior", default=os.path.join(os.environ.get("DATA", ""), "atlas", "vold2_mni", "priors_ACT"))
     parser.add_argument("-e", "--beh", default=os.path.join(os.environ.get("DATA", ""), "docs", "beh_dict.json"))
     parser.add_argument("-g", "--glt", default=os.path.join(os.environ.get("DATA", ""), "docs", "glt_dict.json"))
+    parser.add_argument("-w", "--bsvars", default=os.path.join(os.environ.get("DATA", ""), "docs", "demographics.txt"))
     parser.add_argument("-f", "--phase", required=True)
     parser.add_argument("-s", "--session", required=True)
 
@@ -45,6 +46,7 @@ def main():
     prior_dir: str = args.prior
     beh_dict_path: str = args.beh
     glt_dict_path: str = args.glt
+    demographics_path: str = args.bsvars
     phase: str = args.phase
     sess: str = args.session
 
@@ -80,7 +82,8 @@ def main():
     cmd: str = (
         f"{sys.executable} {script_path} "
         + f"-s {sess} -f {phase} -g {group_dir} "
-        + f"-a {atlas_dir} -r {prior_dir} -p {parent_dir}"
+        + f"-a {atlas_dir} -r {prior_dir} -p {parent_dir} "
+        + f"-b {demographics_path}"
     )
     job_name: str = "PMVM"
     time_limit: str = "40:00:00"
@@ -105,7 +108,7 @@ def main():
             job_id = sbatch_submit.communicate()[0]
             print(job_id.decode("utf-8"))
         elif hpc == "QSUB":
-            qsub(cmd, project_name=project_name, job_name=job_name,
+            qsub(cmd, project_name=project_name, job_name=job_name, cores=10,
                  time_limit=time_limit, memory=int(memory // 1000),
                  stdout_file=h_out, stderr_file=h_err
                  )
