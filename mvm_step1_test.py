@@ -4,6 +4,7 @@ import json
 import fnmatch
 import shutil
 import subprocess
+import logging
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
@@ -17,6 +18,8 @@ from afni import (
     afni_3drefit,
     afni_3dresample
 )
+
+LOGGER: logging.Logger = logging.getLogger(name=__file__)
 
 
 def gather_num_censored_trs(
@@ -149,7 +152,7 @@ def create_group_intersection_mask(
         for subj in included_subj_list
         if os.path.exists(os.path.join(deriv_dir, subj, sess, "mask_epi_anat+tlrc.HEAD"))
     ]
-    print(included_subj_list)
+    LOGGER.info(included_subj_list)
 
     prefix: str = "Group_intersect_mean.nii.gz"
     afni_3dmean(*mask_files, prefix=prefix, cwd=group_dir)
@@ -232,7 +235,7 @@ def func_mask(subj_list, deriv_dir, sess, phase, atlas_dir, prior_dir, group_dir
 
     create_group_intersection_mask(0.3, group_dir, subj_list, deriv_dir, sess, phase)
     gray_matter_file_path: str = create_gray_matter_input(prior_dir)
-    print(f"GMFILE: {gray_matter_file_path}")
+    LOGGER.info(f"GMFILE: {gray_matter_file_path}")
     create_gm_intersection_mask(group_dir, ref_file, gray_matter_file_path)
 
 
@@ -392,18 +395,18 @@ def func_mvm(
             {data_table_arguments}
     """
     hpc: Optional[str] = os.environ.get("HPC")
-    print(f"HPC: {hpc}")
+    LOGGER.info(f"HPC: {hpc}")
     if hpc is not None:
         if hpc == "SLURM":
             func_sbatch(h_cmd, 2, 6, 10, "cMVM", group_dir)
         elif hpc == "QSUB":
-            print(f"cmd: {h_cmd}")
+            LOGGER.info(f"cmd: {h_cmd}")
             proc: subprocess.Popen = subprocess.Popen(h_cmd, shell=True, stdout=subprocess.PIPE)
             proc.wait()
             if proc.returncode != 0:
                 raise Exception("Failed to run 3dMVM")
 
-    print("MVM Done")
+    LOGGER.info("MVM Done")
 
 
 def func_acf(subj, subj_file, group_dir, acf_file):
@@ -453,7 +456,7 @@ def func_clustSim(group_dir, acf_file, mc_file):
             if cluster_proc.returncode != 0:
                 raise Exception("cluster proc failed")
 
-    print("clusterStim Done")
+    LOGGER.info("clusterStim Done")
 
 
 def func_argparser() -> ArgumentParser:
@@ -487,6 +490,8 @@ def main():
     # get/make paths, dicts
     deriv_dir: str = os.path.join(parent_dir, "derivatives")
     subj_list: List[str] = [x for x in os.listdir(deriv_dir) if fnmatch.fnmatch(x, "sub-*")]
+    if not os.path.exists(group_dir):
+        os.mkdir(group_dir)
 
     beh_dict_file_name: str = "beh_dict.json"
     glt_dict_file_name: str = "glt_dict.json"
@@ -520,7 +525,7 @@ def main():
     if not os.path.exists(mask_output_file_path):
         func_mask(subj_list, deriv_dir, sess, phase, atlas_dir, prior_dir, group_dir)
 
-    print("Mask done")
+    LOGGER.info("Mask done")
 
     """ run MVM """
     mvm_output_file_name: str = "MVM+tlrc.HEAD"
@@ -528,7 +533,7 @@ def main():
     if not os.path.exists(mvm_output_file_path):
         func_mvm(beh_dict, glt_dict, subj_list, sess, phase, group_dir, deriv_dir, bs_factors)
 
-    print("MVM Done")
+    LOGGER.info("MVM Done")
 
     """ get subj acf estimates """
     # define, start file
@@ -539,14 +544,14 @@ def main():
     # if file is empty, run func_acf for e/subj
     acf_size = os.path.getsize(acf_file)
     if acf_size == 0:
-        print("NICE")
+        LOGGER.info("NICE")
         for subj in subj_list:
             subj_file = os.path.join(
                 deriv_dir, subj, sess, f"{phase}_single_errts_REML+tlrc"
             )
             func_acf(subj, subj_file, group_dir, acf_file)
 
-    print("ACF done")
+    LOGGER.info("ACF done")
 
     """ do clust simulations """
     mc_file = os.path.join(group_dir, "MC_thresholds.txt")
@@ -557,7 +562,7 @@ def main():
     if mc_size == 0:
         func_clustSim(group_dir, acf_file, mc_file)
 
-    print("clustSim done")
+    LOGGER.info("clustSim done")
 
 
 if __name__ == "__main__":
