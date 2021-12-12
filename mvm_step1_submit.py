@@ -1,3 +1,14 @@
+"""
+Example:
+python mvm_step1_submit.py                                              \
+        -c $CODE -p $DATA                                               \
+        -a /projectnb/pheromone-fmri/data/atlas/vold2_mni               \
+        -b /projectnb/pheromone-fmri/data/atlas/vold2_mni/priors_ACT    \
+        -e /projectnb/pheromone-fmri/data/docs/beh_dict.json            \
+        -g /projectnb/pheromone-fmri/data/docs/glt_dict.json            \
+        -w /projectnb/pheromone-fmri/data/docs/demographics.txt         \
+        -f PheromoneOlfaction -s ""
+"""
 import os
 import sys
 import time
@@ -63,7 +74,7 @@ def main():
     h_err = os.path.join(out_dir, "err_mvm.txt")
 
     # set output directory, write dicts to jsons
-    group_dir = os.path.join(parent_dir, "analyses")
+    group_dir = os.path.join(parent_dir, "group")
     if not os.path.exists(group_dir):
         os.makedirs(group_dir)
 
