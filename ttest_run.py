@@ -16,7 +16,11 @@ import subprocess
 from subprocess import CompletedProcess
 
 
-def generate_processing_script(derivatives_dir: str, group_dir: str, phase: str) -> str:
+def generate_processing_script(
+        derivatives_dir: str,
+        group_dir: str,
+        phase: str,
+        labels: List[str]) -> str:
     """
     Generate the script to perform 3dTest
 
@@ -29,6 +33,8 @@ def generate_processing_script(derivatives_dir: str, group_dir: str, phase: str)
         The path to the group directory where group analysis will be performed
     phase : str
         The name of the current phase for subjects to compute
+    labels : List[str]
+        A list of labels to compare. Really should only have a length of two
 
     Returns
     -------
@@ -38,12 +44,12 @@ def generate_processing_script(derivatives_dir: str, group_dir: str, phase: str)
     script_name: str = "gen_group_command.py"
     test_name: str = "3dttest++"
     output_file_name: str = "paired_ttest_cmd.csh"
-    test_output_prefix: str = f"{phase}_stat_ttest"
+    set_names: str = "-".join(labels)
+    test_output_prefix: str = f"{phase}_{set_names}_stat_ttest"
     subj_dirs_wildcard: str = os.path.join(derivatives_dir, "*")
     subj_ds_wildcard: str = os.path.join(subj_dirs_wildcard, f"{phase}*_stats_REML+tlrc.HEAD")
     datasets: List[str] = glob(subj_ds_wildcard)
-    labels: List[str] = ["P1", "ENI"]
-    betas: List[str] = ["P1#0_Coef", "ENI1#0_Coef"]
+    betas: List[str] = [f"{label}#0_Coef" for label in labels]
     mask_file_name: str = "Group_GM_intersect_mask+tlrc"
     mask_file_path: str = os.path.join(group_dir, mask_file_name)
     options: List[str] = [
@@ -84,6 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("-g", "--groupdir", required=True, help="Path to the group analysis directory")
     parser.add_argument("-p", "--phase", required=True, help="Phase name for the tests")
     parser.add_argument("-e", "--execute", default=False, action="store_const", const=True)
+    parser.add_argument("-l", "--labels", required=True, nargs=2, help="Label pairs to compaire")
 
     args: Namespace = parser.parse_args()
 
@@ -91,7 +98,8 @@ if __name__ == "__main__":
     group_dir: str = args.groupdir
     phase: str = args.phase
     go: str = args.execute
-    proc_script: str = generate_processing_script(derivatives_dir, group_dir, phase)
+    labels: List[str] = args.labels
+    proc_script: str = generate_processing_script(derivatives_dir, group_dir, phase, labels)
 
     if go:
         proc: CompletedProcess = subprocess.run(f"tcsh {proc_script}", shell=True, stdout=subprocess.PIPE, check=True, cwd=group_dir)
