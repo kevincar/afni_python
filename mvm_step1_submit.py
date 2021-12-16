@@ -12,8 +12,8 @@ python mvm_step1_submit.py                                              \
 import os
 import sys
 import time
-import json
 import shutil
+import logging
 import subprocess
 
 from q import qsub
@@ -36,6 +36,9 @@ from argparse import ArgumentParser, Namespace
 
 # set up glt comparisons: key = 1*list[0] -1*list[1]
 # glt_dict = {"Hit-Miss": ["targHT", "targMS"], "LCR-LFA": ["lureCR", "lureFA"]}
+
+
+logging.basicConfig(level=logging.INFO)
 
 
 def main():

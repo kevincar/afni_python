@@ -19,6 +19,7 @@ from afni import (
     afni_3dresample
 )
 
+logging.basicConfig(level=logging.DEBUG)
 LOGGER: logging.Logger = logging.getLogger(name=__file__)
 
 
@@ -536,20 +537,35 @@ def main():
     LOGGER.info("MVM Done")
 
     """ get subj acf estimates """
-    # define, start file
-    acf_file = os.path.join(group_dir, "ACF_subj_all.txt")
-    # if not os.path.exists(acf_file):
-    open(acf_file, "w").close()
+    acf_filename: str = "ACF_subj_all.txt"
+    acf_filepath: str = os.path.join(group_dir, acf_filename)
+    if not os.path.exists(acf_filepath):
+        LOGGER.info("ACF File not found. Processing...")
+        acf_subj_folder_name: str = "ACF_subj"
+        acf_subj_dir: str = os.path.join(group_dir, acf_subj_folder_name)
+        if not os.path.exists(acf_subj_dir):
+            os.mkdir(acf_subj_dir)
 
-    # if file is empty, run func_acf for e/subj
-    acf_size = os.path.getsize(acf_file)
-    if acf_size == 0:
-        LOGGER.info("NICE")
+        acf_data: str = ""
         for subj in subj_list:
-            subj_file = os.path.join(
-                deriv_dir, subj, sess, f"{phase}_single_errts_REML+tlrc"
-            )
-            func_acf(subj, subj_file, group_dir, acf_file)
+            LOGGER.info(f"Gathering subj {subj} acf")
+            acf_subj_filename: str = "ACF_subj_{subj}"
+            acf_subj_filepath: str = os.path.join(acf_subj_dir, acf_subj_filename)
+            if not os.path.exists(acf_subj_filepath):
+                LOGGER.info(f"Subj {subj} acf not found. Generating...")
+                subj_file = os.path.join(
+                    deriv_dir, subj, sess, f"{phase}_single_errts_REML+tlrc"
+                )
+                func_acf(subj, subj_file, group_dir, acf_subj_filepath)
+
+            acf_subj_data: str
+            with open(acf_subj_filepath, "r") as fh:
+                acf_subj_data = fh.read()
+            acf_data += acf_subj_data
+
+        LOGGER.info("Concatenating data...")
+        with open(acf_filepath, "w") as fh:
+            fh.write(acf_data)
 
     LOGGER.info("ACF done")
 
@@ -560,7 +576,7 @@ def main():
 
     mc_size = os.path.getsize(mc_file)
     if mc_size == 0:
-        func_clustSim(group_dir, acf_file, mc_file)
+        func_clustSim(group_dir, acf_filepath, mc_file)
 
     LOGGER.info("clustSim done")
 
