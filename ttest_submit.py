@@ -3,7 +3,8 @@ python ttest_submit.py      \
     -c $CODE                \
     -d $DATA/derivatives    \
     -g $DATA/group          \
-    -p PheromoneOlfaction
+    -p PheromoneOlfaction   \
+    -r $DATA/atlas/ho_ofc
 """
 import os
 import sys
@@ -67,12 +68,14 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--data", required=True, help="Path to data derivatives directory")
     parser.add_argument("-g", "--group", required=True, help="Path to group analysis directory")
     parser.add_argument("-p", "--phase", required=True, help="Name of phase")
+    parser.add_argument("-r", "--roi", help="Name of optional ROI to apply")
 
     args: Namespace = parser.parse_args()
     code_dir: str = args.code
     data_dir: str = args.data
     group_dir: str = args.group
     phase: str = args.phase
+    roi_path: Optional[str] = args.roi
 
     # Load test conditions
     beh_file_name: str = "beh_dict.json"
@@ -101,6 +104,8 @@ if __name__ == "__main__":
         f"-p {phase}",
         "-e"
     ]
+    if roi_path is not None:
+        command_parameters.append(f"-r {roi_path}")
     cmd: str = " ".join(command_parameters)
     for test_condition in test_conditions:
         test_condition_str: str = " ".join(test_condition)
