@@ -53,6 +53,7 @@ def generate_processing_script(
         group_dir: str,
         phase: str,
         labels: List[str],
+        work_dir : Optional[str],
         roi: Optional[str]) -> str:
     """
     Generate the script to perform 3dTest
@@ -68,6 +69,8 @@ def generate_processing_script(
         The name of the current phase for subjects to compute
     labels : List[str]
         A list of labels to compare. Really should only have a length of two
+    work_dir : Optional[str]
+        The path to where the files should be processed
     roi : Optional[str]
         Enables the t-test to be performed using only data specified from
         a ROI mask. The ROI mask is first multlied by the group gray matter
@@ -84,7 +87,7 @@ def generate_processing_script(
     mask_file_path: str = os.path.join(group_dir, mask_file_name)
 
     # Check if this is ROI
-    out_dir_name: str = "ttest"
+    out_dir_name: str = "ttest" if work_dir is None else work_dir
     if roi is not None:
         roi_file_name: str = os.path.basename(roi)
         roi_file_base: str = roi_file_name.split(".")[0]
@@ -147,6 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--execute", default=False, action="store_const", const=True)
     parser.add_argument("-l", "--labels", required=True, nargs=2, help="Label pairs to compaire")
     parser.add_argument("-r", "--roi", help="ROI mask for exploratory small-volume analysis")
+    parser.add_argument("-w", "--workdir", help="The path to the directory where data will be processed")
 
     args: Namespace = parser.parse_args()
 
@@ -156,10 +160,11 @@ if __name__ == "__main__":
     go: bool = args.execute
     labels: List[str] = args.labels
     roi_path: Optional[str] = args.roi
+    work_dir: str = group_dir if args.workdir is None else args.workdir
     proc_script: str = generate_processing_script(derivatives_dir, group_dir,
-                                                  phase, labels, roi_path)
+                                                  phase, labels, work_dir, roi_path)
 
     if go:
-        proc: CompletedProcess = subprocess.run(f"tcsh {proc_script}", shell=True, stdout=subprocess.PIPE, check=True, cwd=group_dir)
+        proc: CompletedProcess = subprocess.run(f"tcsh {proc_script}", shell=True, stdout=subprocess.PIPE, check=True, cwd=work_dir)
         if proc.returncode != 0:
             raise Exception("script failed")
